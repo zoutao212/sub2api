@@ -49,7 +49,7 @@ rem ---------- 3) 隐藏窗口启动 sub2api ----------
 echo [Sub2API] 正在以无窗口模式启动服务...
 if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>&1
 set "VBS=%TEMP%\sub2api-launcher.vbs"
-powershell -NoProfile -Command "([wmiclass]'Win32_Process').Create('cmd /c set CONFIG_FILE=%BASE%backend\config.yaml&& set DATA_DIR=%BASE%backend&& %BASE%backend\sub2api.exe > %LOG% 2>&1')" >nul 2>&1
+powershell -NoProfile -Command "$si = ([wmiclass]'Win32_ProcessStartup').CreateInstance(); $si.ShowWindow = 0; ([wmiclass]'Win32_Process').Create('cmd /c set CONFIG_FILE=%BASE%backend\config.yaml&& set DATA_DIR=%BASE%backend&& %BASE%backend\sub2api.exe > %LOG% 2>&1', '%BASE%backend', $si)" >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 tasklist /FI "IMAGENAME eq sub2api.exe" 2>nul | findstr /I "sub2api.exe" >nul
 if errorlevel 1 (
