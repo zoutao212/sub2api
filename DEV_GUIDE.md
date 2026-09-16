@@ -51,6 +51,13 @@
 | 管理员 | 邮箱 `zoutao212@gmail.com`（密码由主人自持；首次登录需在控制台完成“部署与运营合规确认”） |
 | 前端产物 | `backend/internal/web/dist/`（pnpm build 输出，不入 git） |
 
+**一键启动脚本（项目根目录）**：
+
+- 双击 `start-sub2api.bat`：自动检查/启动依赖服务（PG/Redis 未运行时自动拉起，必要时弹一次 UAC）→ 以隐藏窗口方式独立启动 sub2api（WMI，零黑窗）→ 就绪后自动打开浏览器 → 启动器窗口自动关闭
+- 双击 `stop-sub2api.bat`：停止 sub2api（PostgreSQL / Redis 系统服务保持运行）
+- 实现要点：见坑 12 的 2026-09 补充（CONFIG_FILE / DATA_DIR 环境变量）
+- 脚本编码为 **GBK + CRLF**（中文 Windows cmd 兼容；直接以 UTF-8 保存会因解析错位随机报错）。修改流程：`iconv -f GBK -t UTF-8` 转出编辑 → 行尾 `sed -i 's/\r*$/\r/'` → `iconv -f UTF-8 -t GBK` 转回
+
 ### 开发工具
 
 ```bash
@@ -271,9 +278,16 @@ rm frontend/pnpm-workspace.yaml
 
 **解决**：用 WMI 启动（完全脱离调用会话，零句柄继承）：
 ```bash
-powershell -NoProfile -Command "([wmiclass]'Win32_Process').Create('cmd /c cd /d e:\path\backend && sub2api.exe > e:\path\run.log 2>&1')"
+powershell -NoProfile -Command "([wmiclass]'Win32_Process').Create('cmd /c set CONFIG_FILE=e:\path\backend\config.yaml&& set DATA_DIR=e:\path\backend&& e:\path\backend\sub2api.exe > e:\path\run.log 2>&1')"
 ```
-停止服务：`taskkill /F /IM sub2api.exe`。
+停止服务：`taskkill //F //IM sub2api.exe`（Git Bash 中 `/F` 须写成 `//F` 防路径转换）。
+
+**2026-09 补充（重要）**：WMI 启动必须显式设置两个环境变量：
+
+- `CONFIG_FILE=<backend 绝对路径>\config.yaml`：viper 配置加载优先读取它；
+- `DATA_DIR=<backend 绝对路径>`：`setup.NeedsSetup()` 用来定位 config.yaml 与 .installed。
+
+实测：不设置时，WMI 进程的工作目录与预期不一致，`NeedsSetup()` 误判“未安装”，服务静默进入 setup 向导模式（只注册 `/setup/*` 路由，正常业务 API 全 404）。
 
 ---
 
