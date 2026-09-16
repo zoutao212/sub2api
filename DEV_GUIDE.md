@@ -14,22 +14,42 @@
 
 ## 二、本地环境配置
 
-### PostgreSQL 16 (Windows 服务)
+### PostgreSQL 18 (Windows 服务)
+
+> 2026-09 本机实况：已从 PG 16 升级为 PostgreSQL 18，端口为 **5433**（非默认 5432）。
 
 | 配置项 | 值 |
 |--------|-----|
-| 端口 | 5432 |
-| psql 路径 | `C:\Program Files\PostgreSQL\16\bin\psql.exe` |
-| pg_hba.conf | `C:\Program Files\PostgreSQL\16\data\pg_hba.conf` |
-| 数据库凭据 | user=`sub2api`, password=`sub2api`, dbname=`sub2api` |
-| 超级用户 | user=`postgres`, password=`postgres` |
+| 服务名 | `postgresql-x64-18` |
+| 端口 | **5433** |
+| psql 路径 | `C:\Program Files\PostgreSQL\18\bin\psql.exe` |
+| pg_hba.conf | `C:\Program Files\PostgreSQL\18\data\pg_hba.conf` |
+| 超级用户 | user=`postgres`（密码由主人自持，与旧笔记 `postgres/postgres` 不同） |
+| 数据库 | `sub2api`（由 setup 向导自动建库+跑迁移；未创建独立 sub2api 用户，直接用 postgres 连接） |
+| 监听特性 | 仅监听 IPv6 `[::]:5433`；连接必须用 `localhost` 或 `::1`，填 `127.0.0.1` 会被拒绝 |
 
-### Redis
+### Redis（Memurai Developer 4.1.8）
+
+> 2026-09 安装：Windows 原生 Redis（Memurai Developer 免费版），注册为系统服务，开机自启。
 
 | 配置项 | 值 |
 |--------|-----|
-| 端口 | 6379 |
+| 服务名 | `Memurai`（`sc query Memurai` 查看状态） |
+| 监听 | `127.0.0.1:6379`（IPv4） |
 | 密码 | 无 |
+| 注意 | Developer 版每 10 天需重启一次服务；生产使用需 Enterprise 版 |
+| 安装方式 | `choco install memurai-developer -y`（需管理员提权） |
+
+### sub2api 服务运行方式（Win11 本机）
+
+| 项 | 值/说明 |
+|----|---------|
+| 二进制 | `backend/sub2api.exe`（`go build -tags embed -o sub2api.exe ./cmd/server` 生成，已内嵌前端） |
+| 运行目录 | `backend/`（`config.yaml` 与 `.installed` 都相对运行目录） |
+| 配置文件 | `backend/config.yaml`（由 setup 向导自动生成；数据库 `localhost:5433`、Redis `127.0.0.1:6379`） |
+| 启动方式 | 用独立进程方式启动（见坑 12），日志重定向到文件 |
+| 管理员 | 邮箱 `zoutao212@gmail.com`（密码由主人自持；首次登录需在控制台完成“部署与运营合规确认”） |
+| 前端产物 | `backend/internal/web/dist/`（pnpm build 输出，不入 git） |
 
 ### 开发工具
 
@@ -232,7 +252,32 @@ git add ent/       # 生成的文件也要提交
 
 ---
 
-### 坑 11：PR 提交前检查清单
+### 坑 11：pnpm 12 会重写 lockfile 并生成 pnpm-workspace.yaml
+
+**问题**：本机 pnpm 12 执行 `pnpm install` 后，`frontend/pnpm-lock.yaml` 被重写（上游 CI 用 pnpm 9 + `--frozen-lockfile` 校验），且多出未跟踪的 `frontend/pnpm-workspace.yaml`。
+
+**解决**：
+```bash
+# 还原 lockfile、删除多余文件（不提交这类本地生成物）
+git restore -- frontend/pnpm-lock.yaml
+rm frontend/pnpm-workspace.yaml
+```
+
+---
+
+### 坑 12：本机启动常驻服务进程会让终端命令挂起
+
+**问题**：在 Git Bash 中用带输出重定向的 `Start-Process`（或 `&` 后台符）启动常驻进程（如 sub2api.exe）时，子进程继承调用链句柄，导致该条终端命令永不结束、后续命令全部排队卡死（2026-09 实测：向导进程把整条终端命令队列堵死，需人工杀进程才能解锁）。
+
+**解决**：用 WMI 启动（完全脱离调用会话，零句柄继承）：
+```bash
+powershell -NoProfile -Command "([wmiclass]'Win32_Process').Create('cmd /c cd /d e:\path\backend && sub2api.exe > e:\path\run.log 2>&1')"
+```
+停止服务：`taskkill /F /IM sub2api.exe`。
+
+---
+
+### 坑 13：PR 提交前检查清单
 
 提交 PR 前务必本地验证：
 
@@ -248,17 +293,17 @@ git add ent/       # 生成的文件也要提交
 ### 数据库操作
 
 ```bash
-# 连接数据库
-psql -U sub2api -h 127.0.0.1 -d sub2api
+# 连接数据库（PG18@5433：必须用 localhost/IPv6，不能用 127.0.0.1）
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost -p 5433 -d sub2api
 
-# 查看所有用户
-psql -U postgres -h 127.0.0.1 -c "\du"
+# 查看所有角色
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost -p 5433 -c "\du"
 
 # 查看所有数据库
-psql -U postgres -h 127.0.0.1 -c "\l"
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost -p 5433 -c "\l"
 
 # 执行 SQL 文件
-psql -U sub2api -h 127.0.0.1 -d sub2api -f migration.sql
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost -p 5433 -d sub2api -f migration.sql
 ```
 
 ### Git 操作
