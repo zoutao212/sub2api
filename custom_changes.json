@@ -1,0 +1,126 @@
+{
+  "version": "1.0",
+  "purpose": "Tracks local customization drift against upstream. When a sync conflict lands on one of these files, added_line_ranges_vs_upstream_main tells which hunks are 'mine' and which are 'theirs'.",
+  "upstream_repo": "https://github.com/Wei-Shaw/sub2api",
+  "upstream_remote_name": "origin",
+  "fork_remote_name": "myfork",
+  "branch_model": {
+    "main": "Pure mirror of upstream/main. Never carry local commits here - GitHub's Sync fork button stays available only while this holds.",
+    "custom": "upstream/main + all local work. This is the build and deploy branch."
+  },
+  "upstream_base": "5fc0e486c",
+  "last_sync": "2026-10-09",
+  "sync_command": "sync-upstream.bat (local-only, untracked)",
+  "local_only_files": [
+    "DEV_GUIDE.local.md - this machine's Win11 runbook; renamed from DEV_GUIDE.md so it never collides with upstream's own DEV_GUIDE.md",
+    "start-sub2api.bat / stop-sub2api.bat - launcher scripts, relative %~dp0 paths, GBK+CRLF",
+    "sync-upstream.bat - one-click upstream sync"
+  ],
+  "changes": [
+    {
+      "id": "CHG-001",
+      "file": "backend/internal/pkg/antigravity/client.go",
+      "added_line_ranges_vs_upstream_main": [
+        "655-751",
+        "768-769"
+      ],
+      "hunk_count": 2
+    },
+    {
+      "id": "CHG-002",
+      "file": "backend/internal/pkg/antigravity/oauth.go",
+      "added_line_ranges_vs_upstream_main": [
+        "154-180"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-003",
+      "file": "backend/internal/service/antigravity_quota_fetcher.go",
+      "added_line_ranges_vs_upstream_main": [
+        "9",
+        "84-89",
+        "94-98",
+        "142-147",
+        "157-168",
+        "170-173",
+        "175-186",
+        "189-194",
+        "198-242",
+        "246-269",
+        "271-272"
+      ],
+      "hunk_count": 11
+    },
+    {
+      "id": "CHG-004",
+      "file": "backend/internal/service/antigravity_quota_fetcher_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "89",
+        "149",
+        "167",
+        "179",
+        "201",
+        "230",
+        "259",
+        "285",
+        "306",
+        "325",
+        "346",
+        "366",
+        "390",
+        "398-443"
+      ],
+      "hunk_count": 14
+    },
+    {
+      "id": "CHG-005",
+      "file": "frontend/src/components/account/AccountUsageCell.vue",
+      "added_line_ranges_vs_upstream_main": [
+        "299-310",
+        "312-321",
+        "323-332",
+        "334-386",
+        "952-960",
+        "964-976",
+        "980",
+        "986-989",
+        "992-995",
+        "999-1006"
+      ],
+      "hunk_count": 10
+    },
+    {
+      "id": "CHG-006",
+      "file": "frontend/src/components/account/UsageProgressBar.vue",
+      "added_line_ranges_vs_upstream_main": [
+        "127-128"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-007",
+      "file": "frontend/src/components/account/__tests__/AccountUsageCell.spec.ts",
+      "added_line_ranges_vs_upstream_main": [
+        "385-435"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-008",
+      "file": "frontend/src/i18n/locales/en/admin/accounts.ts",
+      "added_line_ranges_vs_upstream_main": [
+        "1638-1641"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-009",
+      "file": "frontend/src/i18n/locales/zh/admin/accounts.ts",
+      "added_line_ranges_vs_upstream_main": [
+        "515-518"
+      ],
+      "hunk_count": 1
+    }
+  ]
+}
