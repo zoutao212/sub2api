@@ -397,6 +397,48 @@ python -c "from pathlib import Path; [Path(f).write_bytes(Path(f).read_bytes().r
 
 ---
 
+### 坑 16：同步上游后 Go 会自动下载新工具链（大体积、依赖网络）
+
+**问题**：本机 `go version` 是 **1.26.2**，但 `backend/go.mod` 要求 `go 1.27.x`。因为 `GOTOOLCHAIN=auto`，Go 会自动下载并改用所需工具链，缓存在：
+
+```
+C:\Users\zouta\go\pkg\mod\golang.org\toolchain@v0.0.1-go<版本>.windows-amd64
+```
+
+2026-10 上游已把 `go.mod` 从 `1.27.0` 升到 **`1.27.2`**，而本机缓存最大只到 `go1.27.0`。所以同步后首次 `go build` 会触发一次约 70–100 MB 的工具链下载；网络受限或代理异常时会直接报 `toolchain not available`，且报错信息不会明确指向"网络问题"，容易误判。
+
+**同步前自检**：
+
+```powershell
+go env GOTOOLCHAIN                    # 必须是 auto
+cd backend; go list -m -f "{{.GoVersion}}"   # 看 go.mod 实际要求的版本
+```
+
+**已缓存版本**（截至 2026-10-09）：`go1.24.11`、`go1.25.8`、`go1.25.9`、`go1.26.0`、`go1.27.0`。
+
+**处置**：确认网络可达后先跑一次 `cd backend; go build ./...`，让工具链下载完成，再做其他验证。若下载失败，改用显式安装：`go install golang.org/dl/go1.27.2@latest` 然后 `go1.27.2 download`。
+
+---
+
+### 坑 17：上游平台架构重构带来数据库迁移
+
+**问题**：上游 2026-10 的 17 个提交是一次"平台清单驱动"大重构（接入 Cline / Command Code，平台列表改由 profile 派生，平台白名单从数据库 CHECK 约束改为应用层校验）。随之带来：
+
+- 新增迁移 `backend/migrations/242_drop_platform_check_constraints.sql`
+- Ent schema 变更：`composite_model_route.go`、`user_platform_quota.go`
+
+**影响**：合并上游后必须让应用跑一遍迁移，否则新旧校验逻辑不一致。迁移是 DROP CHECK CONSTRAINT（放宽约束、不删数据），风险等级低，但**仍建议先备份数据库**。
+
+**预防**：本机 PG18@5433 迁移前先 dump：
+
+```powershell
+& "C:\Program Files\PostgreSQL\18\bin\pg_dump.exe" -h localhost -p 5433 -U <user> -Fc -f D:\backup\sub2api-pre-sync.dump <dbname>
+```
+
+⚠️ 若本地无 `pg_dump` 在 PATH，用完整路径调用（PostgreSQL 的 bin 不默认入 PATH）。
+
+---
+
 ## 六、常用命令速查
 
 ### 数据库操作
