@@ -7,7 +7,7 @@
 | 项目 | 说明 |
 |------|------|
 | **上游仓库** | Wei-Shaw/sub2api |
-| **Fork 仓库** | bayma888/sub2api-bmai |
+| **Fork 仓库** | zoutao212/sub2api（本地 remote 名 `myfork`；`origin` 指向原作者 Wei-Shaw/sub2api） |
 | **技术栈** | Go 后端 (Ent ORM + Gin) + Vue3 前端 (pnpm) |
 | **数据库** | PostgreSQL 16 + Redis |
 | **包管理** | 后端: go modules, 前端: **pnpm**（不是 npm） |
@@ -291,7 +291,25 @@ powershell -NoProfile -Command "([wmiclass]'Win32_Process').Create('cmd /c set C
 
 ---
 
-### 坑 13：PR 提交前检查清单
+### 坑 13：PowerShell 里没有 pnpm，验证命令要直接调 node_modules/.bin
+
+**问题**：`package.json` 里的 `scripts` 全部以 `pnpm` 开头（如 `build` = `pnpm run check:i18n && vue-tsc -b && vite build`），但本机 PowerShell 会话的 PATH 中没有 `pnpm`（`where pnpm` 返回未找到，只有 `node` / `npm`）。直接跑 `pnpm run check:i18n` 会报“术语 'pnpm' 不会被识别”，且 PowerShell 下 `$LASTEXITCODE` 仍为 0，**极易被误判为“检查通过”**。
+
+**解决**：绕过包管理器，直接调用 `frontend/node_modules/.bin` 下的可执行入口（PowerShell 需带 `.cmd` 后缀）：
+
+```powershell
+cd frontend
+& ".\node_modules\.bin\vitest.cmd" run src/i18n/__tests__/localeKeyCompleteness.spec.ts
+& ".\node_modules\.bin\vue-tsc.cmd" --noEmit
+```
+
+对照关系：`pnpm run check:i18n` → `vitest run src/i18n/__tests__/localeKeyCompleteness.spec.ts`；`pnpm typecheck` → `vue-tsc --noEmit`。
+
+若要彻底解决，执行 `npm install -g pnpm`（或用 corepack）后重启终端。
+
+---
+
+### 坑 14：PR 提交前检查清单
 
 提交 PR 前务必本地验证：
 
