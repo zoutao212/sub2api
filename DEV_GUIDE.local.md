@@ -439,6 +439,59 @@ cd backend; go list -m -f "{{.GoVersion}}"   # 看 go.mod 实际要求的版本
 
 ---
 
+### 坑 18：编译 exe 必须加 `-tags embed`，否则前端全丢
+
+**问题**：`backend/internal/web/` 下有两个互斥文件——`embed_on.go`（`//go:build embed`，含 `//go:embed all:dist`）与 `embed_off.go`（`//go:build !embed`，仅 stub）。**不带 tag 编译出来的 exe 不含任何前端资源**，页面直接打不开。
+
+**陷阱**：`backend/Makefile` 里的 `build` 目标**并没有** `-tags embed`，它产出的是前后端分离的部署产物。照抄 Makefile 会得到一个"能启动但没有 UI"的 exe。
+
+**正确命令**（Windows，无 make）：
+
+```bat
+cd frontend
+call .\node_modules\.bin\vite.cmd build          :: 输出到 backend\internal\web\dist
+cd ..\backend
+set CGO_ENABLED=0
+go build -tags embed -trimpath -o sub2api.exe ./cmd/server
+```
+
+要点：
+
+- `vite.config.ts` 的 `outDir: '../backend/internal/web/dist'`、`emptyOutDir: true` —— 前端产物**直接写进 embed 目录**，不需要手工拷贝；
+- `vite.config.ts` 挂了 `checker({ vueTsc: true })`，所以 `vite build` 自带类型检查，类型错误会直接中断构建；
+- `emptyOutDir: true` 意味着**构建失败会留下不完整的 dist**，所以必须"先确认 dist 完整再编译 Go"，顺序反了会得到一个缺资源的 exe；
+- 前端 dist 与后端代码一起嵌进同一个二进制 —— 所以**只 `git pull` 永远不会让改动生效**，必须重新编译；
+- Windows 编译时 exe 正被运行会因文件锁失败，必须先 `taskkill`。
+
+一键流程见根目录 `rebuild-sub2api.bat`（含预检、停服、备份、替换、重启）。
+
+---
+
+### 坑 19：版本号与"有新版本可用"提示永远差一格（上游自身问题）
+
+**问题**：页面显示"当前版本 v0.2.5，最新版本 v0.2.15"。查证后发现这是**上游的版本时序问题，不是本机问题**：
+
+| tag | tag 里的 `VERSION` 文件 |
+|----|------------------------|
+| v0.2.12 | 0.2.11 |
+| v0.2.13 | 0.2.12 |
+| v0.2.14 | 0.2.13 |
+| v0.2.15 | 0.2.14 |
+
+上游每个 release tag 打好之后才更新 `VERSION` 文件，**系统性滞后一位**。
+
+**版本号的真实来源**（三者并存，容易搞混）：
+
+1. `backend/cmd/server/VERSION` —— 被 `//go:embed VERSION` 编译进二进制，**这是页面实际显示的值**；
+2. Makefile 的 `-X main.Version=$(VERSION)` —— 由 `scripts/resolve-version.sh` 计算，但**会被第 1 项在 init 时覆盖**，等于无效；
+3. `resolve-version.sh` 仅在"恰好检出某个 tag"时才用 tag 名，否则回落到第 1 项。
+
+**结论**：只要同步到 `main`（其 `VERSION` 已是 `0.2.15`）再重新编译，页面就会正确显示 `0.2.15`。**不要为了追 tag 去 checkout v0.2.15** —— 那个 tag 编出来反而是 `0.2.14`。源码构建应始终跟随 `main`。
+
+⚠️ 若页面积累过旧 bundle，版本显示可能滞后于真实值，此时按 Ctrl+F5 强刷。
+
+---
+
 ## 六、常用命令速查
 
 ### 数据库操作
