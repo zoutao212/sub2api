@@ -7,6 +7,21 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	// Embed the IANA timezone database into the binary.
+	//
+	// Windows has no system zoneinfo, so time.LoadLocation("Asia/Shanghai")
+	// fails there unless the tzdata database is either installed or embedded.
+	// Upstream ships no tzdata, and the default config uses
+	// "timezone: Asia/Shanghai", which aborted startup with
+	// `invalid timezone "Asia/Shanghai": unknown time zone Asia/Shanghai`
+	// and registered no business routes (every API returned 404).
+	//
+	// This import is blank on purpose: it only registers the embedded
+	// database with the time package, and it benefits every other
+	// LoadLocation call site in the program too (e.g. per-account quota
+	// reset timezones in internal/service/account.go).
+	_ "time/tzdata"
 )
 
 var (
