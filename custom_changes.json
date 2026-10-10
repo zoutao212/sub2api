@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "purpose": "Tracks local customization drift against upstream. When a sync conflict lands on one of these files, added_line_ranges_vs_upstream_main tells which hunks are 'mine' and which are 'theirs'.",
   "upstream_repo": "https://github.com/Wei-Shaw/sub2api",
   "upstream_remote_name": "origin",
@@ -8,17 +8,41 @@
     "main": "Pure mirror of upstream/main. Never carry local commits here - GitHub's Sync fork button stays available only while this holds.",
     "custom": "upstream/main + all local work. This is the build and deploy branch."
   },
-  "upstream_base": "5fc0e486c",
-  "last_sync": "2026-10-09",
+  "upstream_base": "3a6fd1c9d",
+  "last_sync": "2026-10-10",
   "sync_command": "sync-upstream.bat (local-only, untracked)",
+  "build_command": "rebuild-sub2api.bat (tracked; frontend + go build -tags embed + swap + restart)",
+  "platform_patches": [
+    {
+      "file": "backend/internal/pkg/timezone/timezone.go",
+      "why": "Windows-only necessity, not a preference. Upstream's timezone package calls time.LoadLocation at startup with the default Asia/Shanghai and ships no tzdata; Windows has no system zoneinfo, so startup aborted and no business routes were registered (UI loaded, every API 404). A blank import of time/tzdata embeds the IANA database. Worth offering upstream - the app cannot start on Windows without it.",
+      "recheck_after_sync": "If upstream adds time/tzdata itself, drop this patch."
+    }
+  ],
   "local_only_files": [
-    "DEV_GUIDE.local.md - this machine's Win11 runbook; renamed from DEV_GUIDE.md so it never collides with upstream's own DEV_GUIDE.md",
-    "start-sub2api.bat / stop-sub2api.bat - launcher scripts, relative %~dp0 paths, GBK+CRLF",
-    "sync-upstream.bat - one-click upstream sync"
+    "sync-upstream.bat - one-click upstream sync. MUST stay untracked: it runs 'git checkout main' internally, so if it were tracked the branch switch would delete the running script."
+  ],
+  "tracked_local_files": [
+    "DEV_GUIDE.local.md - this machine's Win11 runbook. Renamed from DEV_GUIDE.md so it never collides with upstream's own DEV_GUIDE.md.",
+    "start-sub2api.bat / stop-sub2api.bat / rebuild-sub2api.bat - Windows launcher and rebuild scripts. Upstream has no such filenames, so they can never conflict; being tracked restores core.autocrlf's CRLF conversion for .bat (there is no .bat rule in .gitattributes)."
   ],
   "changes": [
     {
       "id": "CHG-001",
+      "file": "DEV_GUIDE.local.md",
+      "added_line_ranges_vs_upstream_main": [
+        "1-603"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-002",
+      "file": "DEV_GUIDE.md",
+      "added_line_ranges_vs_upstream_main": [],
+      "hunk_count": 0
+    },
+    {
+      "id": "CHG-003",
       "file": "backend/internal/pkg/antigravity/client.go",
       "added_line_ranges_vs_upstream_main": [
         "655-751",
@@ -27,7 +51,7 @@
       "hunk_count": 2
     },
     {
-      "id": "CHG-002",
+      "id": "CHG-004",
       "file": "backend/internal/pkg/antigravity/oauth.go",
       "added_line_ranges_vs_upstream_main": [
         "154-180"
@@ -35,7 +59,15 @@
       "hunk_count": 1
     },
     {
-      "id": "CHG-003",
+      "id": "CHG-005",
+      "file": "backend/internal/pkg/timezone/timezone.go",
+      "added_line_ranges_vs_upstream_main": [
+        "10-24"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-006",
       "file": "backend/internal/service/antigravity_quota_fetcher.go",
       "added_line_ranges_vs_upstream_main": [
         "9",
@@ -53,7 +85,7 @@
       "hunk_count": 11
     },
     {
-      "id": "CHG-004",
+      "id": "CHG-007",
       "file": "backend/internal/service/antigravity_quota_fetcher_test.go",
       "added_line_ranges_vs_upstream_main": [
         "89",
@@ -74,24 +106,32 @@
       "hunk_count": 14
     },
     {
-      "id": "CHG-005",
+      "id": "CHG-008",
+      "file": "custom_changes.json",
+      "added_line_ranges_vs_upstream_main": [
+        "1-126"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-009",
       "file": "frontend/src/components/account/AccountUsageCell.vue",
       "added_line_ranges_vs_upstream_main": [
         "299-310",
         "312-321",
         "323-332",
         "334-386",
-        "952-960",
-        "964-976",
-        "980",
-        "986-989",
-        "992-995",
-        "999-1006"
+        "947-955",
+        "959-971",
+        "975",
+        "981-984",
+        "987-990",
+        "994-1001"
       ],
       "hunk_count": 10
     },
     {
-      "id": "CHG-006",
+      "id": "CHG-010",
       "file": "frontend/src/components/account/UsageProgressBar.vue",
       "added_line_ranges_vs_upstream_main": [
         "127-128"
@@ -99,26 +139,50 @@
       "hunk_count": 1
     },
     {
-      "id": "CHG-007",
+      "id": "CHG-011",
       "file": "frontend/src/components/account/__tests__/AccountUsageCell.spec.ts",
       "added_line_ranges_vs_upstream_main": [
-        "385-435"
+        "450-500"
       ],
       "hunk_count": 1
     },
     {
-      "id": "CHG-008",
+      "id": "CHG-012",
       "file": "frontend/src/i18n/locales/en/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
-        "1638-1641"
+        "1641-1644"
       ],
       "hunk_count": 1
     },
     {
-      "id": "CHG-009",
+      "id": "CHG-013",
       "file": "frontend/src/i18n/locales/zh/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
-        "515-518"
+        "518-521"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-014",
+      "file": "rebuild-sub2api.bat",
+      "added_line_ranges_vs_upstream_main": [
+        "1-156"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-015",
+      "file": "start-sub2api.bat",
+      "added_line_ranges_vs_upstream_main": [
+        "1-86"
+      ],
+      "hunk_count": 1
+    },
+    {
+      "id": "CHG-016",
+      "file": "stop-sub2api.bat",
+      "added_line_ranges_vs_upstream_main": [
+        "1-31"
       ],
       "hunk_count": 1
     }

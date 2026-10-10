@@ -492,6 +492,68 @@ go build -tags embed -trimpath -o sub2api.exe ./cmd/server
 
 ---
 
+### 坑 20：Windows 上启动失败、API 全 404 —— 缺 tzdata（新版引入，本仓库已修）
+
+**现象**：新版本编译替换后，进程起来了、端口 8080 在监听、**首页能打开**，但所有业务 API 返回 **404**，日志末尾是：
+
+```
+Failed to initialize application: invalid timezone "Asia/Shanghai": unknown time zone Asia/Shanghai
+```
+
+**根因**：上游新引入的 `backend/internal/pkg/timezone` 包在启动路径上调用 `time.LoadLocation(tz)`，而 `config.yaml` 默认 `timezone: Asia/Shanghai`。Go 需要 IANA 时区库：Linux 有 `/usr/share/zoneinfo`，**Windows 没有**，而**上游从未嵌入 `time/tzdata`**（全仓 grep 为 0 处）。时区初始化失败 → 主初始化流程中止 → 业务路由根本没注册 → 只剩静态文件服务（所以首页正常、API 全 404，极具迷惑性）。
+
+⚠️ 这个陷阱的可怕之处：**看起来服务是活的**。旧 exe（9/17）没这个问题，因为 `timezone` 包是新版才引入的。
+
+**本仓库的修复**（`backend/internal/pkg/timezone/timezone.go`，提交 `4054f39dc`）：
+
+```go
+import (
+	"fmt"
+	"log"
+	"time"
+
+	_ "time/tzdata"   // 把 IANA 时区库编译进二进制（Go 1.15+ 官方方案）
+)
+```
+
+**验证方法**：
+
+1. 二进制体积应增长约 400–450 KB（本次实测 `166,955,520 → 167,371,264`，+415,744 字节）；
+2. 启动日志应出现 `Timezone initialized: Asia/Shanghai (UTC offset: +08:00)`；
+3. `curl http://localhost:8080/api/v1/settings/public` 应返回 200 而非 404。
+
+**同步上游后必须复查**：若上游日后自己加了 `time/tzdata`，需去掉本补丁避免重复；若上游把 `timezone` 包改到别处调用，本补丁因是 blank import（进程级生效）仍有效，无需跟随。
+
+---
+
+### 坑 21：CodeBuddy IDE 注入的 NODE_OPTIONS 会让 vite/vitest 直接崩
+
+**现象**：`vite build` 报一个与项目毫无关系的错误：
+
+```
+CACError: Unknown option `-T`
+```
+
+`vitest` 则报 `Warning: --localstorage-file was provided without a valid path`。
+
+**根因**：IDE（CodeBuddy）会往 shell 注入环境变量，把它的语言服务 shim 挂到**每一个** node 进程上：
+
+```
+NODE_OPTIONS=--require="C:/Users/zouta/AppData/Local/Programs/CodeBuddy CN/resources/app/extensions/genie/out/vendor/shim/node-language-shim.cjs"
+```
+
+这个 shim 破坏了 vite/vitest 的参数解析。注意它是**进程级注入**——用户级/机器级 `NODE_OPTIONS` 都是空的，所以在系统设置里查不到。
+
+**解决**（在运行构建前清掉，只影响当前会话）：
+
+```powershell
+Remove-Item Env:\NODE_OPTIONS -ErrorAction SilentlyContinue
+```
+
+⚠️ 若在 IDE 内置终端里构建并失败，先怀疑这个。在**独立**的 cmd/PowerShell 窗口（非 IDE 内嵌终端）里构建则通常不受影响。
+
+---
+
 ## 六、常用命令速查
 
 ### 数据库操作
