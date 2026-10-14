@@ -1,5 +1,5 @@
 {
-  "version": "1.3",
+  "version": "1.4",
   "purpose": "Local drift vs upstream. ONLY overlay_changes entries can ever produce a merge conflict - they are files that also exist upstream. local_only_files have no upstream counterpart and cannot conflict. Regenerated after every sync because line ranges shift.",
   "upstream_repo": "https://github.com/Wei-Shaw/sub2api",
   "upstream_remote_name": "origin",
@@ -13,7 +13,7 @@
   "synced_version": "0.2.16",
   "sync_command": "sync-upstream.bat (local-only, untracked)",
   "build_command": "rebuild-sub2api.bat (tracked) - vite build, then go build -tags embed, swap, restart",
-  "conflict_hotspot_warning": "frontend/src/components/account/AccountUsageCell.vue is upstream's most-churned file touching our overlay. Expect conflicts there first.",
+  "conflict_hotspot_warning": "Two files now carry real conflict risk: frontend/src/components/account/AccountUsageCell.vue (upstream's most-churned file touching us) and backend/internal/service/billing_service.go (frequently edited, and now holds our gemini-4-argon price table + matcher).",
   "overlay_changes": [
     {
       "id": "OVR-001",
@@ -48,7 +48,8 @@
         "10-24"
       ],
       "hunk_count": 1,
-      "deleted_by_us": false
+      "deleted_by_us": false,
+      "note": "Windows-only platform patch: blank import of time/tzdata. Without it startup aborts on Windows and every API returns 404 while the UI still loads. Still absent upstream as of 0.2.16, so it remains required."
     },
     {
       "id": "OVR-005",
@@ -93,6 +94,26 @@
     },
     {
       "id": "OVR-007",
+      "file": "backend/internal/service/billing_service.go",
+      "added_line_ranges_vs_upstream_main": [
+        "527-548",
+        "1107-1112"
+      ],
+      "hunk_count": 2,
+      "deleted_by_us": false,
+      "note": "Adds gemini-4-argon (and its -gcp alias) to the hardcoded fallback price table plus a Contains-based matcher. NEW as of 2026-10-14. Upstream edits this file frequently - if a conflict lands here, keep BOTH sides: their new entries and ours. Our hunks are additive (one price struct, one if-branch)."
+    },
+    {
+      "id": "OVR-008",
+      "file": "backend/internal/service/billing_service_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "121-147"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false
+    },
+    {
+      "id": "OVR-009",
       "file": "frontend/src/components/account/AccountUsageCell.vue",
       "added_line_ranges_vs_upstream_main": [
         "299-310",
@@ -110,7 +131,7 @@
       "deleted_by_us": false
     },
     {
-      "id": "OVR-008",
+      "id": "OVR-010",
       "file": "frontend/src/components/account/UsageProgressBar.vue",
       "added_line_ranges_vs_upstream_main": [
         "132-133"
@@ -119,7 +140,7 @@
       "deleted_by_us": false
     },
     {
-      "id": "OVR-009",
+      "id": "OVR-011",
       "file": "frontend/src/components/account/__tests__/AccountUsageCell.spec.ts",
       "added_line_ranges_vs_upstream_main": [
         "450-500"
@@ -128,7 +149,7 @@
       "deleted_by_us": false
     },
     {
-      "id": "OVR-010",
+      "id": "OVR-012",
       "file": "frontend/src/i18n/locales/en/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
         "1661-1664"
@@ -137,7 +158,7 @@
       "deleted_by_us": false
     },
     {
-      "id": "OVR-011",
+      "id": "OVR-013",
       "file": "frontend/src/i18n/locales/zh/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
         "524-527"
@@ -146,21 +167,21 @@
       "deleted_by_us": false
     }
   ],
-  "platform_patches": [
-    {
-      "file": "backend/internal/pkg/timezone/timezone.go",
-      "why": "Windows-only necessity. The timezone package calls time.LoadLocation at startup with the default Asia/Shanghai and upstream ships no tzdata; Windows has no system zoneinfo, so startup aborted and no business routes were registered (UI loaded, every API 404). A blank import of time/tzdata embeds the IANA database (+415744 bytes measured). Still absent upstream as of 0.2.16, so this patch is still required.",
-      "recheck_after_sync": "Drop if upstream adds time/tzdata itself."
-    }
+  "how_to_price_a_new_model": [
+    "1. The runtime price source is a LiteLLM-format catalog, not a DB table: data_dir/model_prices_and_context_window.json, refreshed from pricing.remote_url.",
+    "2. Precedence when resolving a model: group.model_pricing -> channel_model_pricing -> LiteLLM catalog -> hardcoded fallback in billing_service.go.",
+    "3. Nothing strips model-name suffixes, so an alias like 'gemini-4-argon-gcp' needs its own resolution - either its own catalog key or a Contains-based matcher in the fallback.",
+    "4. Editing data_dir/model_prices_and_context_window.json is futile: the 10-minute sync job overwrites it. Use pricing.override_file (highest precedence, never overwritten) for a no-code fix.",
+    "5. Historical usage_logs keep the cost computed at the time - fixing a price does NOT rewrite past records."
   ],
   "local_only_files": [
     {
       "path": "DEV_GUIDE.local.md",
-      "note": "Win11 runbook, renamed from DEV_GUIDE.md so it never collides with upstream's own DEV_GUIDE.md."
+      "note": "Win11 runbook, renamed from DEV_GUIDE.md."
     },
     {
       "path": "start-sub2api.bat",
-      "note": "Launcher (handles PostgreSQL being Manual-start)."
+      "note": "Launcher (starts PostgreSQL, which is Manual-start)."
     },
     {
       "path": "stop-sub2api.bat",
@@ -168,7 +189,7 @@
     },
     {
       "path": "rebuild-sub2api.bat",
-      "note": "One-click rebuild: preflight, stop, vite build, go build -tags embed, timestamped backup, swap, restart. Never swaps on failure."
+      "note": "One-click rebuild. Never swaps on failure."
     },
     {
       "path": "custom_changes.json",
@@ -176,7 +197,7 @@
     },
     {
       "path": "sync-upstream.bat",
-      "note": "UNTRACKED on purpose: it runs 'git checkout main' internally, so if tracked the branch switch would delete the running script."
+      "note": "UNTRACKED on purpose: runs 'git checkout main' internally."
     }
   ]
 }

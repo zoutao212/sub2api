@@ -609,6 +609,42 @@ Start-Process -FilePath "cmd.exe" -ArgumentList "/c","net start postgresql-x64-1
 
 ---
 
+### 坑 25：新模型显示 $0.0000 —— 价格体系与别名陷阱
+
+**现象**：新模型（如 `gemini-4-argon-gcp`）在用量页 实际/成本/标准 三列全是 `$0.0000`。
+
+**价格从哪来**（**不在数据库里**，是内存中的 LiteLLM 格式 JSON + Go 硬编码兜底）：
+
+| 层 | 位置 | 优先级 |
+|---|---|---|
+| 分组定价 | DB `groups.model_pricing`（Admin → 分组 → 模型定价） | 最高 |
+| 渠道定价 | DB `channel_model_pricing`（Admin → 渠道 → 定价配置） | 高 |
+| LiteLLM 目录 | `data_dir/model_prices_and_context_window.json`，从 `pricing.remote_url` 每 10 分钟比对同步 | 中 |
+| **Go 硬编码兜底** | `backend/internal/service/billing_service.go` 的 `initFallbackPricing()` | 最低（但永不丢） |
+
+⚠️ **别去手改 `data_dir/` 里的目录文件** —— 那个 10 分钟一次的同步任务会把它冲掉。要免改码就用 `pricing.override_file`（优先级最高、永不被覆盖）；要随代码走就加进硬编码兜底。
+
+**别名陷阱（关键）**：**定价路径里没有任何代码会剥离模型名后缀**。`gemini-4-argon-gcp` 不会自动解析到 `gemini-4-argon`，必须为"实际被计费的那个名字"单独配价，否则**静默记成 $0**。查明被计费的名字取决于渠道的 `billing_model_source` 设置（`requested` = 用请求名）。
+
+**安全做法**：在硬编码兜底里用 `strings.Contains` 匹配（照抄 `gemini-3.1-pro` 的写法），一个分支同时覆盖 `gemini-4-argon` / `gemini-4-argon-gcp` / 大小写变体。这是本仓库既有范式，已在 `billing_service.go` 为 gemini-4-argon 落地（提交 `b4195c86e`）。
+
+**已生效的定价**（本仓库定制）：
+
+| 模型 | 输入 | 输出 | 缓存读 | 备注 |
+|---|---|---|---|---|
+| `gemini-4-argon` / `-gcp` | $2.00 | $10.00 | $0.20 | Vertex 官方促销价至 2026-11-30；**缓存价是按 Gemini 全线 10% 惯例推断**，Google 未公布 |
+
+⚠️ **历史记录不会重算**：`usage_logs` 里的成本是**当时算出来的**，改价只影响之后的请求。之前记成 `$0` 的那些不会自动补账。`usage_dashboard_daily` 也只是汇总，同样不会回溯。
+
+**测试范式**：定价测试文件带 `//go:build unit` 标签，必须加 `-tags unit` 才会执行（否则报 `no tests to run`）：
+
+```powershell
+cd backend
+go test -tags unit ./internal/service/ -run "Gemini4Argon" -v -count=1
+```
+
+---
+
 ## 六、常用命令速查
 
 ### 数据库操作
