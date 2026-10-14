@@ -554,6 +554,61 @@ Remove-Item Env:\NODE_OPTIONS -ErrorAction SilentlyContinue
 
 ---
 
+### 坑 22：`config.yaml` 里的密码带 YAML 引号，脚本直接取用会认证失败
+
+**现象**：用脚本从 `backend/config.yaml` 读密码执行 `pg_dump`，报：
+
+```
+致命错误: 用户 "postgres" Password 认证失败
+```
+
+**根因**：配置里写的是 `password: "xxxxxx"`（**含双引号**）。逐行解析时若不做 YAML 标量解引号，`PGPASSWORD` 会连引号一起带上，长度看着"对"（8 字符）但内容是错的（真实密码 6 字符）。这个坑隐蔽在于**报错指向认证失败，而非密码格式**，容易误以为密码本身错了。
+
+**解决**（任何从 YAML 读值的脚本都应如此）：
+
+```python
+def unquote(v):
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        return v[1:-1]
+    return v
+```
+
+**自检**：打印 `len(raw)` 与 `len(unquote(raw))` 不一致即可确认存在引号。
+
+---
+
+### 坑 23：本机 PostgreSQL 是 Manual 启动，重启电脑后必须先手动拉起
+
+**现象**：备份/迁移脚本报 `connection to server at "localhost" (::1), port 5433 failed: Connection refused`；但 Memurai（Redis）是自动启动的，容易误判"环境正常"。
+
+**根因**：服务 `postgresql-x64-18` 的启动类型是 **Manual**（见 `Get-Service postgresql-x64-18 | Select StartType`）。开机不自启，需手动 `net start`（**需管理员权限**）。
+
+**处置**：
+
+```powershell
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c","net start postgresql-x64-18" -Verb RunAs -Wait
+```
+
+`start-sub2api.bat` 已内置这份逻辑（检测 5433 端口并 `net start`）。手动操作数据库（备份、psql 查询）前，先确认 `netstat -ano | findstr ":5433 "` 有 LISTENING。
+
+---
+
+### 坑 24：在本 IDE 的 shell 里写复杂命令，优先改用脚本文件
+
+**现象**（本次任务中反复出现，每次都浪费一轮往返）：
+
+- `cmd /c "a && b"` 后面再接 PowerShell 语句 → 整条命令被交给 cmd，报 `'Remove-Item' 不是内部或外部命令`
+- `python -c "多行脚本"` → 引号被 PowerShell 吃掉，报 `SyntaxError: unterminated string literal`
+- `-replace "a","b","c"` 多段拼接 → 报 `-replace 运算符后只能跟两个元素`
+- `(if (...) {...} else {...})` 写在表达式里 → 报 `术语 'if' 不会被识别`
+- `Remove-Item` 删除不存在的路径 → 安全策略 `SAFE_DELETE_FAIL_CLOSED` 直接报错（先用 `Test-Path` 判断，或 `-ErrorAction SilentlyContinue`）
+
+**处置原则**：只要一条命令里出现「引号嵌套 / 多语句 / 正则替换 / 条件表达式」，就**写成 `.py` 或 `.bat` 文件再执行**。Python 用 `subprocess` + 显式 `encoding`，一次性解决引号、编码、跨进程参数三大问题。脚本放 `.git/` 目录（不被跟踪），用完即删。
+
+⚠️ 另：工具对疑似长期运行的命令有 watch 检测，会中断等待。耗时任务一律**后台启动 + 日志重定向 + 轮询**，不要用 `WaitForExit` 死等（用户会以为卡死）。
+
+---
+
 ## 六、常用命令速查
 
 ### 数据库操作

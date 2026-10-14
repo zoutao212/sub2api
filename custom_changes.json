@@ -1,6 +1,6 @@
 {
-  "version": "1.2",
-  "purpose": "Local drift vs upstream. ONLY the overlay_changes entries can ever produce a merge conflict - they are files that also exist upstream. local_only_files have no upstream counterpart (unique filenames) and therefore can never conflict.",
+  "version": "1.3",
+  "purpose": "Local drift vs upstream. ONLY overlay_changes entries can ever produce a merge conflict - they are files that also exist upstream. local_only_files have no upstream counterpart and cannot conflict. Regenerated after every sync because line ranges shift.",
   "upstream_repo": "https://github.com/Wei-Shaw/sub2api",
   "upstream_remote_name": "origin",
   "fork_remote_name": "myfork",
@@ -8,11 +8,12 @@
     "main": "Pure mirror of upstream/main. Never carry local commits here - GitHub's Sync fork button stays available only while this holds.",
     "custom": "upstream/main + all local work. This is the build and deploy branch."
   },
-  "upstream_base": "3a6fd1c9d",
-  "last_sync": "2026-10-10",
+  "upstream_base": "4d9ac3e48",
+  "last_sync": "2026-10-14",
+  "synced_version": "0.2.16",
   "sync_command": "sync-upstream.bat (local-only, untracked)",
   "build_command": "rebuild-sub2api.bat (tracked) - vite build, then go build -tags embed, swap, restart",
-  "conflict_hotspot_warning": "frontend/src/components/account/AccountUsageCell.vue is upstream's most-churned file touching our overlay (90 commits of history). Expect conflicts there first.",
+  "conflict_hotspot_warning": "frontend/src/components/account/AccountUsageCell.vue is upstream's most-churned file touching our overlay. Expect conflicts there first.",
   "overlay_changes": [
     {
       "id": "OVR-001",
@@ -98,12 +99,12 @@
         "312-321",
         "323-332",
         "334-386",
-        "947-955",
-        "959-971",
-        "975",
-        "981-984",
-        "987-990",
-        "994-1001"
+        "962-970",
+        "974-986",
+        "990",
+        "996-999",
+        "1002-1005",
+        "1009-1016"
       ],
       "hunk_count": 10,
       "deleted_by_us": false
@@ -112,7 +113,7 @@
       "id": "OVR-008",
       "file": "frontend/src/components/account/UsageProgressBar.vue",
       "added_line_ranges_vs_upstream_main": [
-        "127-128"
+        "132-133"
       ],
       "hunk_count": 1,
       "deleted_by_us": false
@@ -130,7 +131,7 @@
       "id": "OVR-010",
       "file": "frontend/src/i18n/locales/en/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
-        "1641-1644"
+        "1661-1664"
       ],
       "hunk_count": 1,
       "deleted_by_us": false
@@ -139,32 +140,35 @@
       "id": "OVR-011",
       "file": "frontend/src/i18n/locales/zh/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
-        "518-521"
+        "524-527"
       ],
       "hunk_count": 1,
       "deleted_by_us": false
     }
   ],
-  "overlay_notes": {
-    "backend/internal/pkg/timezone/timezone.go": "Windows-only necessity, not a preference. Upstream's new timezone package calls time.LoadLocation at startup using the config default Asia/Shanghai, and ships no tzdata; Windows has no system zoneinfo, so startup aborted with 'invalid timezone Asia/Shanghai' and registered no business routes - the UI loaded while every API returned 404. A blank import of time/tzdata embeds the IANA database (+415,744 bytes of binary, measured). Worth offering upstream: the app cannot start on Windows without it.",
-    "recheck_after_sync": "If upstream adds time/tzdata itself, drop the timezone patch."
-  },
+  "platform_patches": [
+    {
+      "file": "backend/internal/pkg/timezone/timezone.go",
+      "why": "Windows-only necessity. The timezone package calls time.LoadLocation at startup with the default Asia/Shanghai and upstream ships no tzdata; Windows has no system zoneinfo, so startup aborted and no business routes were registered (UI loaded, every API 404). A blank import of time/tzdata embeds the IANA database (+415744 bytes measured). Still absent upstream as of 0.2.16, so this patch is still required.",
+      "recheck_after_sync": "Drop if upstream adds time/tzdata itself."
+    }
+  ],
   "local_only_files": [
     {
       "path": "DEV_GUIDE.local.md",
-      "note": "Win11 runbook. Renamed from DEV_GUIDE.md so it never collides with upstream's own DEV_GUIDE.md."
+      "note": "Win11 runbook, renamed from DEV_GUIDE.md so it never collides with upstream's own DEV_GUIDE.md."
     },
     {
       "path": "start-sub2api.bat",
-      "note": "Launcher. Tracked because being tracked restores core.autocrlf CRLF conversion for .bat (no .bat rule in .gitattributes)."
+      "note": "Launcher (handles PostgreSQL being Manual-start)."
     },
     {
       "path": "stop-sub2api.bat",
-      "note": "Stopper. Name unique to this fork - cannot conflict."
+      "note": "Stopper."
     },
     {
       "path": "rebuild-sub2api.bat",
-      "note": "Preflight, frontend build, go build -tags embed, timestamped backup, swap, restart. Refuses to swap on failure."
+      "note": "One-click rebuild: preflight, stop, vite build, go build -tags embed, timestamped backup, swap, restart. Never swaps on failure."
     },
     {
       "path": "custom_changes.json",
