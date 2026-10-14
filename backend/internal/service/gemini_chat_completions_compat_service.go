@@ -103,7 +103,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		useUpstreamStream = true
 	}
 
-	buildReq, requestIDHeader := s.buildGeminiChatCompletionsUpstreamRequestFunc(
+	buildReq, requestIDHeader := s.buildGeminiCompatUpstreamRequestFunc(
 		account,
 		mappedModel,
 		geminiReq,
@@ -290,7 +290,13 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	}, nil
 }
 
-func (s *GeminiMessagesCompatService) buildGeminiChatCompletionsUpstreamRequestFunc(
+// buildGeminiCompatUpstreamRequestFunc builds the upstream request closure for
+// every Gemini compat protocol layer (chat completions and Responses). Action
+// selection and auth follow the account type: API key → AI Studio model
+// action with x-goog-api-key; OAuth → Code Assist v1internal wrapper when a
+// project_id is present, otherwise AI Studio with Bearer; service account →
+// Vertex publisher model URL with the shared token provider.
+func (s *GeminiMessagesCompatService) buildGeminiCompatUpstreamRequestFunc(
 	account *Account,
 	mappedModel string,
 	geminiReq []byte,
