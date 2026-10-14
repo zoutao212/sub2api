@@ -524,6 +524,28 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown: false,
 	}
 
+	// Gemini 4 Argon (Vertex AI pricing: $2.00 input / $10.00 output per MTok,
+	// flat across all context lengths, promotional through 2026-11-30 —
+	// published 2026-10-14, so it is absent from the remote LiteLLM catalog and
+	// this fallback is what actually prices it).
+	//
+	// Cache read is INFERRED, not published: Google has not listed a cached-input
+	// rate for Argon yet, so it follows the 10%-of-input convention used by every
+	// other Gemini entry here (3.1 Pro 0.2/2, 3.6-3.8 Flash 0.075/0.75). Leaving it
+	// at zero would make every cache hit free and understate spend; adjust here if
+	// Google publishes a different figure.
+	//
+	// The matcher below uses strings.Contains, so aliases such as the
+	// "-gcp" variant deployed here resolve to this same entry. Without it an
+	// unlisted alias silently records token-bearing requests at $0.
+	s.fallbackPrices["gemini-4-argon"] = &ModelPricing{
+		InputPricePerToken:         2e-6,   // $2.00 per MTok (promotional)
+		OutputPricePerToken:        10e-6,  // $10.00 per MTok (promotional)
+		CacheCreationPricePerToken: 2e-6,   // follows 3.1 Pro: creation billed as input
+		CacheReadPricePerToken:     0.2e-6, // $0.20 per MTok — inferred, see note above
+		SupportsCacheBreakdown:     false,
+	}
+
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
 		InputPricePerToken:             2.5e-6,  // $2.5 per MTok
@@ -1081,6 +1103,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-3.8-flash") || strings.Contains(modelLower, "gemini-3-8-flash") {
 		return s.fallbackPrices["gemini-3.8-flash"]
+	}
+	// Gemini 4 Argon. Contains-based on purpose: this deployment reaches it as
+	// "gemini-4-argon-gcp", and suffix stripping does not exist anywhere in the
+	// pricing path, so a plain equality lookup would miss the alias entirely.
+	if strings.Contains(modelLower, "gemini-4-argon") {
+		return s.fallbackPrices["gemini-4-argon"]
 	}
 
 	// DeepSeek 系列：官方模型 V4 Pro/Flash（含 vision-exp）按各自价卡；

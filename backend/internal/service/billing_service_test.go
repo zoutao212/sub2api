@@ -118,6 +118,33 @@ func TestGetModelPricing_FallbackMatchesByFamily(t *testing.T) {
 	}
 }
 
+// Gemini 4 Argon went GA 2026-10-14 and is absent from the remote LiteLLM
+// catalog, so the hardcoded fallback is what actually prices it. The "-gcp"
+// alias must resolve too: nothing in the pricing path strips suffixes, so this
+// test fails if the matcher is ever narrowed to an equality lookup.
+func TestGetModelPricing_Gemini4ArgonCoversGCPAlias(t *testing.T) {
+	svc := newTestBillingService()
+
+	models := []string{
+		"gemini-4-argon",     // upstream / catalog spelling
+		"gemini-4-argon-gcp", // the alias this deployment actually requests
+		"Gemini-4-Argon-GCP", // case-insensitive path
+	}
+
+	for _, model := range models {
+		pricing, err := svc.GetModelPricing(model)
+		require.NoError(t, err, "模型 %s", model)
+		require.InDelta(t, 2e-6, pricing.InputPricePerToken, 1e-12, "模型 %s 输入价格", model)
+		require.InDelta(t, 10e-6, pricing.OutputPricePerToken, 1e-12, "模型 %s 输出价格", model)
+	}
+
+	// Cache read is inferred (Google publishes no cached-input rate for Argon),
+	// pinned here so the assumption stays visible if anyone changes it.
+	pricing, err := svc.GetModelPricing("gemini-4-argon-gcp")
+	require.NoError(t, err)
+	require.InDelta(t, 0.2e-6, pricing.CacheReadPricePerToken, 1e-12)
+}
+
 func TestGetModelPricing_CaseInsensitive(t *testing.T) {
 	svc := newTestBillingService()
 
