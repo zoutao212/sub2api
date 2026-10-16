@@ -3270,7 +3270,7 @@ func convertClaudeMessagesToGeminiGenerateContent(body []byte) ([]byte, error) {
 			"parts": []any{map[string]any{"text": systemText}},
 		}
 	}
-	out["contents"] = contents
+	out["contents"] = normalizeGeminiTrailingTurns(contents)
 
 	if tools := convertClaudeToolsToGeminiTools(req["tools"]); tools != nil {
 		out["tools"] = tools
