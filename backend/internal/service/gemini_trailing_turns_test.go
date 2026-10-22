@@ -168,3 +168,80 @@ func TestNormalizeGeminiTrailingTurns_EmptyContents(t *testing.T) {
 	require.Empty(t, normalizeGeminiTrailingTurns(nil))
 	require.Empty(t, normalizeGeminiTrailingTurns([]any{}))
 }
+
+func TestNormalizeGeminiTrailingTurns_KeepsInlineDataWithFunctionResponse(t *testing.T) {
+	// Upstream 0.2.17 preserves tool-result images as inlineData sharing the
+	// turn with the functionResponse. That multimodal shape is accepted by
+	// Gemini/Vertex; only a functionResponse mixed with *text* is the 400 shape,
+	// so media parts must stay in the original turn.
+	contents := normalizeGeminiTrailingTurns([]any{
+		map[string]any{"role": "user", "parts": []any{
+			map[string]any{"functionResponse": map[string]any{"name": "Grep"}},
+			map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "aGVsbG8="}},
+		}},
+	})
+
+	require.Len(t, contents, 1)
+	require.True(t, hasFunctionResponse(t, contents[0]))
+	require.Len(t, contentParts(t, contents[0]), 2)
+}
+
+func TestNormalizeGeminiTrailingTurns_SplitsTextButKeepsInlineData(t *testing.T) {
+	// text + functionResponse + inlineData: the text moves out (the verified
+	// 400 shape), the inlineData stays with the functionResponse.
+	contents := normalizeGeminiTrailingTurns([]any{
+		map[string]any{"role": "user", "parts": []any{
+			map[string]any{"functionResponse": map[string]any{"name": "Grep"}},
+			map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "aGVsbG8="}},
+			map[string]any{"text": "and this note"},
+		}},
+	})
+
+	require.Len(t, contents, 2)
+	require.True(t, hasFunctionResponse(t, contents[0]))
+	require.Len(t, contentParts(t, contents[0]), 2)
+	require.Equal(t, "and this note", firstPartText(t, contents[1]))
+}
+
+func TestNormalizeGeminiTrailingTurns_KeepsToolResultImagesInTurn(t *testing.T) {
+	// End-to-end guard for the upstream 0.2.17 tool-result image preservation:
+	// a trailing user turn holding two tool_results (text+image and image-only)
+	// converts to functionResponse + inlineData parts and must NOT be split.
+	// Mirrors the upstream test's fixture so a converter change that alters the
+	// part count fails here instead of silently regressing both layers.
+	contents := geminiContentsFromClaudeRequest(t, []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "search it"},
+		}},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{
+				"type":  "tool_use",
+				"id":    "toolu_123",
+				"name":  "inspect",
+				"input": map[string]any{"target": "a"},
+			},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": "toolu_123",
+				"content": []any{
+					map[string]any{"type": "text", "text": "found it"},
+					map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}},
+				},
+			},
+			map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": "toolu_123",
+				"content": []any{
+					map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/jpeg", "data": "d29ybGQ="}},
+				},
+			},
+		}},
+	})
+
+	require.Len(t, contents, 3)
+	require.Equal(t, "user", contentRole(t, contents[2]))
+	require.Len(t, contentParts(t, contents[2]), 4)
+	require.True(t, hasFunctionResponse(t, contents[2]))
+}

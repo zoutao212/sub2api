@@ -22,6 +22,12 @@ const geminiContinuationTurnText = "Continue."
 //     user messages, so the merged turn holds functionResponse plus text.
 //     Moving the non-functionResponse parts into their own trailing user turn is
 //     accepted; a trailing turn holding only functionResponse is accepted as-is.
+//
+// Only *text* parts are split out. Non-text payloads sharing the turn with a
+// functionResponse (inlineData images carried by tool results, preserved by
+// upstream since 0.2.17) are a standard Gemini multimodal shape and stay in
+// place - splitting them would undo that feature. The 400 shape verified
+// against Vertex is a functionResponse mixed with text, not with media.
 func normalizeGeminiTrailingTurns(contents []any) []any {
 	if len(contents) == 0 {
 		return contents
@@ -42,7 +48,15 @@ func normalizeGeminiTrailingTurns(contents []any) []any {
 		responses := make([]any, 0, len(parts))
 		rest := make([]any, 0, len(parts))
 		for _, part := range parts {
-			if pm, ok := part.(map[string]any); ok && pm["functionResponse"] != nil {
+			pm, ok := part.(map[string]any)
+			if !ok {
+				rest = append(rest, part)
+				continue
+			}
+			if pm["functionResponse"] != nil || pm["text"] == nil {
+				// functionResponse itself, plus any non-text payload (inlineData
+				// images from tool results, fileData, ...) which is a supported
+				// multimodal shape - keep both in the original turn.
 				responses = append(responses, part)
 				continue
 			}

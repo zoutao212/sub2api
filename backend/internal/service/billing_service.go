@@ -524,16 +524,18 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown: false,
 	}
 
-	// Gemini 4 Argon (Vertex AI pricing: $2.00 input / $10.00 output per MTok,
-	// flat across all context lengths, promotional through 2026-11-30 —
-	// published 2026-10-14, so it is absent from the remote LiteLLM catalog and
-	// this fallback is what actually prices it).
+	// Gemini 4 Argon (Google AI pricing: $2 input / $10 output / $0.10 cached
+	// input per MTok, promotional through 2026-11-30; official rates double to
+	// $4/$20/$0.20 from 2026-12-01). One rate covers every prompt length.
+	// Antigravity's -high/-low/-medium aliases are matched below so unavailable
+	// remote pricing never records token-bearing requests at $0.
 	//
-	// Cache read is INFERRED, not published: Google has not listed a cached-input
-	// rate for Argon yet, so it follows the 10%-of-input convention used by every
-	// other Gemini entry here (3.1 Pro 0.2/2, 3.6-3.8 Flash 0.075/0.75). Leaving it
-	// at zero would make every cache hit free and understate spend; adjust here if
-	// Google publishes a different figure.
+	// CacheCreation follows the 3.1 Pro entry in this table: cache creation is
+	// billed at the input rate rather than free.
+	//
+	// 历史：本仓库 2026-10-14 曾按 Gemini 全线 10% 惯例将缓存读推断为 $0.20；
+	// 2026-10-22 同步上游 0.2.17 时，上游带来官方促销缓存价 $0.10（其非促销价
+	// $0.20 与 cyber-permissive 价卡吻合），故对号入座改为 $0.10。
 	//
 	// The matcher below uses strings.Contains, so aliases such as the
 	// "-gcp" variant deployed here resolve to this same entry. Without it an
@@ -542,8 +544,17 @@ func (s *BillingService) initFallbackPricing() {
 		InputPricePerToken:         2e-6,   // $2.00 per MTok (promotional)
 		OutputPricePerToken:        10e-6,  // $10.00 per MTok (promotional)
 		CacheCreationPricePerToken: 2e-6,   // follows 3.1 Pro: creation billed as input
-		CacheReadPricePerToken:     0.2e-6, // $0.20 per MTok — inferred, see note above
+		CacheReadPricePerToken:     0.1e-6, // $0.10 per MTok (promotional)
 		SupportsCacheBreakdown:     false,
+	}
+
+	// Gemini 4 Argon Cyber Permissive (Vertex AI pricing: $4 input / $20 output /
+	// $0.20 cached input per MTok). The Gemini 4 Argon promotion does not apply.
+	s.fallbackPrices["gemini-4-argon-cyber-permissive"] = &ModelPricing{
+		InputPricePerToken:     4e-6,
+		OutputPricePerToken:    20e-6,
+		CacheReadPricePerToken: 0.2e-6,
+		SupportsCacheBreakdown: false,
 	}
 
 	// OpenAI GPT-5.4（业务指定价格）
@@ -979,6 +990,20 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier:   2,
 	}
 
+	// xAI Grok 4.7 Fast (Cursor and Grok Build only): the same model on faster
+	// infrastructure at $4 input / $1 cached input / $12 output below 200k;
+	// long-context rates are $6 / $1.50 / $18 (1.5x of the Fast base card).
+	s.fallbackPrices["grok-4.7-fast"] = &ModelPricing{
+		InputPricePerToken:            4e-6,
+		OutputPricePerToken:           12e-6,
+		CacheReadPricePerToken:        1e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    1.5,
+		LongContextOutputMultiplier:   1.5,
+	}
+
 	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k;
 	// long-context rates are $2.50 / $0.40 / $5.
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
@@ -1036,7 +1061,7 @@ func (s *BillingService) initFallbackPricing() {
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
-	modelLower := strings.ToLower(model)
+	modelLower := normalizeAntigravityClaudeTierAlias(strings.ToLower(model))
 	if modelLower == "jev-latest" {
 		return s.fallbackPrices["jev-latest"]
 	}
@@ -1103,6 +1128,10 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-3.8-flash") || strings.Contains(modelLower, "gemini-3-8-flash") {
 		return s.fallbackPrices["gemini-3.8-flash"]
+	}
+	// Cyber 变体不享受 Gemini 4 Argon 的优惠价，必须先于 "gemini-4-argon" 判。
+	if strings.Contains(modelLower, "gemini-4-argon-cyber") {
+		return s.fallbackPrices["gemini-4-argon-cyber-permissive"]
 	}
 	// Gemini 4 Argon. Contains-based on purpose: this deployment reaches it as
 	// "gemini-4-argon-gcp", and suffix stripping does not exist anywhere in the
@@ -1274,6 +1303,11 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["grok-4.6"]
 	case "grok-4.7", "grok-4.7-latest":
 		return s.fallbackPrices["grok-4.7"]
+	// Grok 4.7 Fast IDs (grok-4.7-fast, and the Grok Build ID
+	// grok-4.7-build-fast). Without these cases both fall into the unknown-Grok
+	// family card and bill at the standard 4.7 rate (#8119).
+	case "grok-4.7-fast", "grok-4.7-build-fast":
+		return s.fallbackPrices["grok-4.7-fast"]
 	case "grok-4.5", "grok-4.5-latest":
 		return s.fallbackPrices["grok-4.5"]
 	case "grok-3-mini":

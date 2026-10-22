@@ -118,10 +118,9 @@ func TestGetModelPricing_FallbackMatchesByFamily(t *testing.T) {
 	}
 }
 
-// Gemini 4 Argon went GA 2026-10-14 and is absent from the remote LiteLLM
-// catalog, so the hardcoded fallback is what actually prices it. The "-gcp"
-// alias must resolve too: nothing in the pricing path strips suffixes, so this
-// test fails if the matcher is ever narrowed to an equality lookup.
+// Gemini 4 Argon went GA 2026-10-14. The "-gcp" alias must resolve too:
+// nothing in the pricing path strips suffixes, so this test fails if the
+// matcher is ever narrowed to an equality lookup.
 func TestGetModelPricing_Gemini4ArgonCoversGCPAlias(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -138,11 +137,13 @@ func TestGetModelPricing_Gemini4ArgonCoversGCPAlias(t *testing.T) {
 		require.InDelta(t, 10e-6, pricing.OutputPricePerToken, 1e-12, "模型 %s 输出价格", model)
 	}
 
-	// Cache read is inferred (Google publishes no cached-input rate for Argon),
-	// pinned here so the assumption stays visible if anyone changes it.
+	// Cache read follows the upstream official promotional card ($0.10 per MTok
+	// through 2026-11-30, doubling to $0.20 from 2026-12-01). Originally pinned
+	// at 0.2e-6 on 2026-10-14 as a 10%-of-input inference; realigned when the
+	// 0.2.17 sync brought the published rate.
 	pricing, err := svc.GetModelPricing("gemini-4-argon-gcp")
 	require.NoError(t, err)
-	require.InDelta(t, 0.2e-6, pricing.CacheReadPricePerToken, 1e-12)
+	require.InDelta(t, 0.1e-6, pricing.CacheReadPricePerToken, 1e-12)
 }
 
 func TestGetModelPricing_CaseInsensitive(t *testing.T) {
@@ -1228,6 +1229,58 @@ func TestGetModelPricing_Grok47OfficialFallback(t *testing.T) {
 			require.False(t, pricing.SupportsCacheBreakdown)
 		})
 	}
+}
+
+func TestGetModelPricing_Grok47FastOfficialFallback(t *testing.T) {
+	svc := newTestBillingService()
+
+	for _, model := range []string{"grok-4.7-fast", "grok-4.7-build-fast", "GROK-4.7-FAST"} {
+		model := model
+		t.Run(model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(model)
+			require.NoError(t, err)
+			require.InDelta(t, 4e-6, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, 12e-6, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, 1e-6, pricing.CacheReadPricePerToken, 1e-12)
+			require.Equal(t, 200000, pricing.LongContextInputThreshold)
+			require.True(t, pricing.LongContextThresholdInclusive)
+			require.InDelta(t, 1.5, pricing.LongContextInputMultiplier, 1e-12)
+			require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
+			require.False(t, pricing.SupportsCacheBreakdown)
+		})
+	}
+	require.True(t, svc.HasIdentifiedTokenPricing("grok-4.7-fast"))
+}
+
+// Issue #8119: Grok 4.7 Fast used to inherit the unknown-Grok card and bill at
+// the standard grok-4.7 rate.
+func TestCalculateCost_Grok47FastUsesFastCard(t *testing.T) {
+	svc := newTestBillingService()
+
+	short := UsageTokens{InputTokens: 100_000, CacheReadTokens: 50_000, OutputTokens: 10_000}
+	standard, err := svc.CalculateCost("grok-4.7", short, 1)
+	require.NoError(t, err)
+	fast, err := svc.CalculateCost("grok-4.7-fast", short, 1)
+	require.NoError(t, err)
+	require.InDelta(t, 0.4, fast.InputCost, 1e-12)
+	require.InDelta(t, 0.05, fast.CacheReadCost, 1e-12)
+	require.InDelta(t, 0.12, fast.OutputCost, 1e-12)
+	require.False(t, fast.LongContextBillingApplied)
+	// Below 200k the Fast card is exactly twice the standard card.
+	require.InDelta(t, standard.TotalCost*2, fast.TotalCost, 1e-12)
+
+	// Reaching 200k prompt tokens moves the whole request to $6 / $1.50 / $18.
+	long := UsageTokens{InputTokens: 150_000, CacheReadTokens: 50_000, OutputTokens: 10_000}
+	standardLong, err := svc.CalculateCost("grok-4.7", long, 1)
+	require.NoError(t, err)
+	fastLong, err := svc.CalculateCost("grok-4.7-fast", long, 1)
+	require.NoError(t, err)
+	require.True(t, fastLong.LongContextBillingApplied)
+	require.InDelta(t, 0.9, fastLong.InputCost, 1e-12)
+	require.InDelta(t, 0.075, fastLong.CacheReadCost, 1e-12)
+	require.InDelta(t, 0.18, fastLong.OutputCost, 1e-12)
+	// Long-context Fast is 1.5x the standard long-context card.
+	require.InDelta(t, standardLong.TotalCost*1.5, fastLong.TotalCost, 1e-12)
 }
 
 func TestGetModelPricing_GrokOfficialFamilyCards(t *testing.T) {

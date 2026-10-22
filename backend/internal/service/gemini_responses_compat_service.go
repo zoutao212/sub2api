@@ -136,7 +136,10 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsResponses(
 	)
 
 	var resp *http.Response
+	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
+	var checkedPolicy *ErrorPolicyResult
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+		checkedPolicy = nil
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -151,11 +154,11 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsResponses(
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
 		}
 
-		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
-			resp = rebuilt
+		checked, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel)
+		resp = rebuilt
+		checkedPolicy = checked
+		if checked != nil && *checked != ErrorPolicyNone {
 			break
-		} else {
-			resp = rebuilt
 		}
 
 		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
@@ -220,7 +223,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsResponses(
 		respBody := s.readUpstreamErrorBody(resp)
 		policy := ErrorPolicyNone
 		if s.rateLimitService != nil {
-			policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
+			policy = s.finalErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel, checkedPolicy)
 		}
 		// Same account-state handling contract as the messages and chat
 		// completions compat layers: only None / Matched reach rate-limit
