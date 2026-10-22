@@ -165,6 +165,39 @@
       ],
       "hunk_count": 1,
       "deleted_by_us": false
+    },
+    {
+      "id": "OVR-014",
+      "file": "backend/internal/handler/gateway_handler_responses.go",
+      "added_line_ranges_vs_upstream_main": [
+        "182-186",
+        "190-192",
+        "284-294",
+        "304-312"
+      ],
+      "hunk_count": 6,
+      "deleted_by_us": false,
+      "note": "Gemini branch for /v1/responses: group platform detection, gemini: session prefix, maxAccountSwitchesGemini, non-Gemini account skip, geminiCompatService.ForwardAsResponses dispatch. See docs/GEMINI_RESPONSES_COMPAT.md."
+    },
+    {
+      "id": "OVR-015",
+      "file": "backend/internal/service/gemini_chat_completions_compat_service.go",
+      "added_line_ranges_vs_upstream_main": [
+        "294-299"
+      ],
+      "hunk_count": 2,
+      "deleted_by_us": false,
+      "note": "Pure rename refactor: buildGeminiChatCompletionsUpstreamRequestFunc -> buildGeminiCompatUpstreamRequestFunc (shared by chat completions and Responses chains). No behavior change; remaining -/+ lines are same-line replacements at 106 and 293."
+    },
+    {
+      "id": "OVR-016",
+      "file": "backend/internal/service/gemini_messages_compat_service.go",
+      "added_line_ranges_vs_upstream_main": [
+        "3273"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "Same-line replacement only: convertClaudeMessagesToGeminiGenerateContent now pipes its contents array through normalizeGeminiTrailingTurns (new local-only file) before marshalling. Needed because Vertex answers `400 Requests ending with a model turn are not supported.` both for a history ending with a model turn and for a trailing user turn that mixes a functionResponse with text - verified against Vertex with probe payloads. Keep this line when conflicts land here; the whole normalization lives in the local-only file."
     }
   ],
   "how_to_price_a_new_model": [
@@ -198,6 +231,26 @@
     {
       "path": "sync-upstream.bat",
       "note": "UNTRACKED on purpose: runs 'git checkout main' internally."
+    },
+    {
+      "path": "backend/internal/service/gemini_responses_compat_service.go",
+      "note": "Gemini -> Responses compat chain for /v1/responses (Responses->Anthropic->Gemini, reusing existing converters). See docs/GEMINI_RESPONSES_COMPAT.md. Companion overlay edits: handler/gateway_handler_responses.go (Gemini branch) and service/gemini_chat_completions_compat_service.go (upstream builder renamed to buildGeminiCompatUpstreamRequestFunc)."
+    },
+    {
+      "path": "backend/internal/service/gemini_responses_compat_service_test.go",
+      "note": "Unit tests for the Gemini -> Responses chain (non-streaming + streaming event bridge)."
+    },
+    {
+      "path": "docs/GEMINI_RESPONSES_COMPAT.md",
+      "note": "Design and operations doc for the Gemini -> Responses compat chain."
+    },
+    {
+      "path": "backend/internal/service/gemini_trailing_turns.go",
+      "note": "Gemini-boundary tail normalization for converted generateContent requests: appends a minimal user turn when the history would end with a model turn, and splits a trailing user turn that mixes functionResponse with text. Both shapes are rejected by Gemini 3.6+/4.x (Vertex: `400 Requests ending with a model turn are not supported.`), and both were confirmed by probing Vertex directly. Called from one place: convertClaudeMessagesToGeminiGenerateContent (overlay OVR-016), so it covers the chat completions, messages, Responses and Antigravity compat chains at once."
+    },
+    {
+      "path": "backend/internal/service/gemini_trailing_turns_test.go",
+      "note": "Unit tests for the Gemini trailing-turn normalization (model-tail continuation, functionResponse/text split, no-op cases)."
     }
   ]
 }

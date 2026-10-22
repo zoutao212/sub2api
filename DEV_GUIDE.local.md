@@ -645,6 +645,31 @@ go test -tags unit ./internal/service/ -run "Gemini4Argon" -v -count=1
 
 ---
 
+### 坑 26：`Requests ending with a model turn are not supported.` —— 两种尾部形状，同一句话
+
+**现象**：`/v1/chat/completions` 或 `/v1/responses` 偶发 upstream 400：`Requests ending with a model turn are not supported.`（`ops_error_logs.error_source=upstream_http`、`error_owner=provider`，账号是 Vertex service_account）。**账号和模型都是好的** —— 同一账号同一模型同时有成功计费记录，只有特定请求形状失败，所以别去查凭据/配额。换模型也一样报（3.8-flash、4-argon 都中），因为这是 Vertex 的请求校验。
+
+**关键（最容易误判的点）**：这句话**不等于「末尾真的是 model 轮次」**。实测两种完全不同的尾部触发同一句话：
+
+| 发往上游的 `contents` 尾部 | Vertex | 实际来源 |
+|---|---|---|
+| `user[text]`、`model(text)`+独立 `user`、`user[functionResponse]` 单轮、`user[functionResponse]`+独立 `user[text]` | 200 | — |
+| 末尾是 `role: model` | **400 同一句** | 客户端历史以 assistant 结尾（换模型续聊、重放被截断的生成、重跑一轮） |
+| 末尾 `user` 轮次里**同时有 `functionResponse` 和文本** | **400 同一句** | 工具结果与用户消息被**合并进同一轮**（真实事故形状：客户端按 `… function_call, function_call_output, message/user` 发，转换时相邻 user 消息合并成 `user[resp, text]`） |
+| `functionCall` 缺 `thoughtSignature` | 400（**另一句**：`Function call is missing a thought_signature…`；本仓库注入 dummy 签名已规避） | — |
+
+⚠️ **`-gcp` 后缀与报错无关**：那只是账号 `credentials.model_mapping` 里的本地别名（`gemini-3.8-flash-gcp -> gemini-3.8-flash`），真实上游是 `https://aiplatform.googleapis.com/v1/projects/<proj>/locations/global/publishers/google/models/<model>:generateContent`。
+
+**处置（本仓库已落地）**：归一化放在本地文件 `backend/internal/service/gemini_trailing_turns.go`，唯一接入点是 `gemini_messages_compat_service.go` 里 `convertClaudeMessagesToGeminiGenerateContent` 的 `out["contents"]` 那一行 —— 一条线同时覆盖 chat completions / messages / responses / Antigravity 四条链。策略：末尾 model 轮次 → 追加最小 user 轮次（用例里是 `Continue.`）；末尾 user 轮次混了 `functionResponse`+文本 → **拆成两轮**（`functionResponse` 留原轮，文本挪到紧随其后的独立 user 轮，用客户端自己的文本，不注入）。同步上游时若这一行冲突，**保留我们的写法**（详见 `custom_changes.json` OVR-016）。
+
+**排查手法（下次直接用）**：
+
+1. 库里**不存请求正文**（`ops_error_logs` 只有错误体，`prompt_audit_events` / `content_moderation_logs` 是空的）。要拿真实 body 就在转换器出口加日志，注意 **`ops_system_logs` 只收 warn/error**：Info 级只进 `backend/logs/sub2api.log`；想入库得用 `logger.WriteSinkEvent("warn", ...)`。
+2. 客户端形状看 `ForwardAsResponses` 收到的 `input` item 序列即可（`message/user`、`function_call`、`function_call_output`…），配合 `contents` 角色序列就能手工推演合并结果（合并相邻同角色后条数应与 `contents=N` 吻合，不吻合才说明丢内容）。
+3. 想定死 Vertex 的规则，**别猜、直接探测**：用账号的 service_account（`credentials.service_account_json`）签 JWT 换 token，POST 到上面的 Vertex URL，几个几十 token 的 payload 就能把规则试出来（`generationConfig.maxOutputTokens: 32` 足够）。凭据和脚本放 `.git/`（不被跟踪），用完即删。
+
+---
+
 ## 六、常用命令速查
 
 ### 数据库操作
