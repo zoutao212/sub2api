@@ -325,6 +325,21 @@ git restore -- frontend/pnpm-lock.yaml
 rm frontend/pnpm-workspace.yaml
 ```
 
+**2026-10-24 补充（0.2.18 同步实测）**：pnpm 12 跑 `pnpm build` 时会先校验依赖，发现与 lockfile 不一致就自动执行一次**非 frozen** 安装，lockfile 再次被改写；且 pnpm 12 不再读取 package.json 里的 `pnpm.overrides`，`pnpm install --frozen-lockfile` 会直接报 `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`。改用 `npx pnpm@10 install --frozen-lockfile` 又因 node_modules 由 pnpm 12 生成而要求整目录重建，无 TTY 时报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`（pnpm 提示需 `CI=true` 才允许清空重装）。
+
+**本机可行流程**（不重装、不改 lockfile；0.2.18 实测三项全过）：
+
+```bash
+git restore -- frontend/pnpm-lock.yaml
+rm -f frontend/pnpm-workspace.yaml
+cd frontend
+npx pnpm@10 exec vitest run src/i18n/__tests__/localeKeyCompleteness.spec.ts
+npx pnpm@10 exec vue-tsc -b
+npx pnpm@10 exec vite build          # 产物写入 backend/internal/web/dist
+```
+
+前提是 node_modules 已存在（pnpm 12 已按 package.json 范围装好）。pnpm 12 默认拦截 esbuild/vue-demi 构建脚本（`ERR_PNPM_IGNORED_BUILDS`），实测不影响 vite 借 esbuild 平台二进制包完成打包。CI 仍以 `pnpm-lock.yaml` + pnpm 9 frozen 为准，本机这套只是绕开版本冲突。
+
 ---
 
 ### 坑 12：本机启动常驻服务进程会让终端命令挂起
@@ -414,7 +429,7 @@ go env GOTOOLCHAIN                    # 必须是 auto
 cd backend; go list -m -f "{{.GoVersion}}"   # 看 go.mod 实际要求的版本
 ```
 
-**已缓存版本**（截至 2026-10-22）：`go1.24.11`、`go1.25.8`、`go1.25.9`、`go1.26.0`、`go1.27.0`、`go1.27.3`（0.2.17 同步时 `go build` 自动下载验证）。
+**已缓存版本**（截至 2026-10-24）：`go1.24.11`、`go1.25.8`、`go1.25.9`、`go1.26.0`、`go1.27.0`、`go1.27.3`（0.2.17 / 0.2.18 同步时 `go build` 均验证可用）。
 
 **处置**：确认网络可达后先跑一次 `cd backend; go build ./...`，让工具链下载完成，再做其他验证。若下载失败，改用显式安装：`go install golang.org/dl/go1.27.2@latest` 然后 `go1.27.2 download`。
 
@@ -428,6 +443,8 @@ cd backend; go list -m -f "{{.GoVersion}}"   # 看 go.mod 实际要求的版本
 - Ent schema 变更：`composite_model_route.go`、`user_platform_quota.go`
 
 2026-10-22 同步 0.2.17 又带来 `backend/migrations/246_enable_gemini_image_generation_groups.sql`（Gemini 分组「允许当前分组生图」开关，数据迁移）。重启 sub2api 即自动执行；执行前按上文先 dump。
+
+2026-10-24 同步 0.2.18 带来 `backend/migrations/247_scoped_admin_api_keys.sql`（新建 `scoped_admin_api_keys` 表：管理员 API 密钥按操作/资源范围授权，只存不可逆摘要，含 IP/策略白名单、撤销审计与 `deleted_at` 软删列）。重启 sub2api 即自动执行；执行前按上文先 dump。
 
 **影响**：合并上游后必须让应用跑一遍迁移，否则新旧校验逻辑不一致。迁移是 DROP CHECK CONSTRAINT（放宽约束、不删数据），风险等级低，但**仍建议先备份数据库**。
 
