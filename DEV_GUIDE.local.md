@@ -414,7 +414,7 @@ go env GOTOOLCHAIN                    # 必须是 auto
 cd backend; go list -m -f "{{.GoVersion}}"   # 看 go.mod 实际要求的版本
 ```
 
-**已缓存版本**（截至 2026-10-09）：`go1.24.11`、`go1.25.8`、`go1.25.9`、`go1.26.0`、`go1.27.0`。
+**已缓存版本**（截至 2026-10-22）：`go1.24.11`、`go1.25.8`、`go1.25.9`、`go1.26.0`、`go1.27.0`、`go1.27.3`（0.2.17 同步时 `go build` 自动下载验证）。
 
 **处置**：确认网络可达后先跑一次 `cd backend; go build ./...`，让工具链下载完成，再做其他验证。若下载失败，改用显式安装：`go install golang.org/dl/go1.27.2@latest` 然后 `go1.27.2 download`。
 
@@ -426,6 +426,8 @@ cd backend; go list -m -f "{{.GoVersion}}"   # 看 go.mod 实际要求的版本
 
 - 新增迁移 `backend/migrations/242_drop_platform_check_constraints.sql`
 - Ent schema 变更：`composite_model_route.go`、`user_platform_quota.go`
+
+2026-10-22 同步 0.2.17 又带来 `backend/migrations/246_enable_gemini_image_generation_groups.sql`（Gemini 分组「允许当前分组生图」开关，数据迁移）。重启 sub2api 即自动执行；执行前按上文先 dump。
 
 **影响**：合并上游后必须让应用跑一遍迁移，否则新旧校验逻辑不一致。迁移是 DROP CHECK CONSTRAINT（放宽约束、不删数据），风险等级低，但**仍建议先备份数据库**。
 
@@ -667,6 +669,8 @@ go test -tags unit ./internal/service/ -run "Gemini4Argon" -v -count=1
 1. 库里**不存请求正文**（`ops_error_logs` 只有错误体，`prompt_audit_events` / `content_moderation_logs` 是空的）。要拿真实 body 就在转换器出口加日志，注意 **`ops_system_logs` 只收 warn/error**：Info 级只进 `backend/logs/sub2api.log`；想入库得用 `logger.WriteSinkEvent("warn", ...)`。
 2. 客户端形状看 `ForwardAsResponses` 收到的 `input` item 序列即可（`message/user`、`function_call`、`function_call_output`…），配合 `contents` 角色序列就能手工推演合并结果（合并相邻同角色后条数应与 `contents=N` 吻合，不吻合才说明丢内容）。
 3. 想定死 Vertex 的规则，**别猜、直接探测**：用账号的 service_account（`credentials.service_account_json`）签 JWT 换 token，POST 到上面的 Vertex URL，几个几十 token 的 payload 就能把规则试出来（`generationConfig.maxOutputTokens: 32` 足够）。凭据和脚本放 `.git/`（不被跟踪），用完即删。
+
+**2026-10-22 补充（0.2.17 同步）**：上游新增「保留 tool_result 图片」——tool_result 里的图片以 `inlineData` 与 `functionResponse` **同轮**出现（Gemini 标准多模态工具返回形状）。我们的 `normalizeGeminiTrailingTurns` 已相应收紧：**只把文本 part 拆到新轮**，inlineData 等非文本 payload 留在原轮。若把归一化改回「拆走一切非 functionResponse」，上游测试 `TestConvertClaudeMessagesToGeminiGenerateContent_ExtractsToolResultImages` 会挂（contents 里图片丢失），且上游的图片保留功能被静默 undo。
 
 ---
 
