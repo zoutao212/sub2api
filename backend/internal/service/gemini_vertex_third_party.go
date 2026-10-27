@@ -19,6 +19,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// vertexThirdPartyOpenAIEndpoint 是第三方 MaaS 模型实际使用的 Vertex OpenAI 兼容端点标签，
+// 写入 usage 记录，避免与 Gemini 原生的 /v1beta/models 混淆。
+const vertexThirdPartyOpenAIEndpoint = "/endpoints/openapi/chat/completions"
+
 // forwardVertexThirdPartyChatCompletions 直转客户端的 Chat Completions 请求到 Vertex AI 的
 // OpenAI 兼容端点 (endpoints/openapi/chat/completions)。
 // 适用于 account.platform=gemini && account.type=service_account，且目标模型为第三方 MaaS 模型（如 DeepSeek）。
@@ -44,6 +48,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	SetActualOpenAIUpstreamEndpoint(c, vertexThirdPartyOpenAIEndpoint)
 
 	upstreamModel := NormalizeVertexThirdPartyModelID(mappedModel)
 	upstreamBody := body
@@ -53,6 +58,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 	if normBody, changed := NormalizeVertexOpenAIReasoningEffort(upstreamBody); changed {
 		upstreamBody = normBody
 	}
+	logVertexPromptHistoryDriftForChatBody(c, account, "chat_maas", upstreamModel, upstreamBody)
 
 	if clientStream {
 		if uBody, err := ensureOpenAIChatStreamUsage(upstreamBody); err == nil {
@@ -192,9 +198,11 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 		if err != nil {
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
 		}
-		usage.InputTokens = int(gjson.GetBytes(respBody, "usage.prompt_tokens").Int())
-		usage.OutputTokens = int(gjson.GetBytes(respBody, "usage.completion_tokens").Int())
-		usage.CacheReadInputTokens = int(gjson.GetBytes(respBody, "usage.prompt_tokens_details.cached_tokens").Int())
+		if parsedUsage, ok := openAIUsageFromGJSON(gjson.GetBytes(respBody, "usage")); ok {
+			usage.InputTokens = parsedUsage.InputTokens
+			usage.OutputTokens = parsedUsage.OutputTokens
+			usage.CacheReadInputTokens = parsedUsage.CacheReadInputTokens
+		}
 
 		c.Data(http.StatusOK, "application/json", respBody)
 	}
@@ -238,6 +246,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 	if err != nil {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, err.Error())
 	}
+	SetActualOpenAIUpstreamEndpoint(c, vertexThirdPartyOpenAIEndpoint)
 
 	upstreamModel := NormalizeVertexThirdPartyModelID(mappedModel)
 
@@ -421,12 +430,10 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 				continue
 			}
 
-			if chunk.Usage != nil {
-				usage.InputTokens = chunk.Usage.PromptTokens
-				usage.OutputTokens = chunk.Usage.CompletionTokens
-				if chunk.Usage.PromptTokensDetails != nil {
-					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
-				}
+			if chunkUsage := extractCCStreamUsage(trimmed); chunkUsage != nil {
+				usage.InputTokens = chunkUsage.InputTokens
+				usage.OutputTokens = chunkUsage.OutputTokens
+				usage.CacheReadInputTokens = chunkUsage.CacheReadInputTokens
 			}
 
 			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != nil && *chunk.Choices[0].Delta.Content != "" {
@@ -483,8 +490,8 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 			totalTokens = ccResp.Usage.TotalTokens
 			usage.InputTokens = ccResp.Usage.PromptTokens
 			usage.OutputTokens = ccResp.Usage.CompletionTokens
-			if ccResp.Usage.PromptTokensDetails != nil {
-				usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
+			if parsedUsage, ok := openAIUsageFromGJSON(gjson.GetBytes(respBody, "usage")); ok {
+				usage.CacheReadInputTokens = parsedUsage.CacheReadInputTokens
 			}
 		}
 
@@ -560,6 +567,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 	if normBody, changed := NormalizeVertexOpenAIReasoningEffort(chatBody); changed {
 		chatBody = normBody
 	}
+	logVertexPromptHistoryDriftForChatBody(c, account, "responses_maas", upstreamModel, chatBody)
 
 	projectID := account.VertexProjectID()
 	if strings.TrimSpace(projectID) == "" {
@@ -572,6 +580,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 	if err != nil {
 		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	SetActualOpenAIUpstreamEndpoint(c, vertexThirdPartyOpenAIEndpoint)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -710,12 +719,10 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 				continue
 			}
 
-			if chunk.Usage != nil {
-				usage.InputTokens = chunk.Usage.PromptTokens
-				usage.OutputTokens = chunk.Usage.CompletionTokens
-				if chunk.Usage.PromptTokensDetails != nil {
-					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
-				}
+			if chunkUsage := extractCCStreamUsage(trimmed); chunkUsage != nil {
+				usage.InputTokens = chunkUsage.InputTokens
+				usage.OutputTokens = chunkUsage.OutputTokens
+				usage.CacheReadInputTokens = chunkUsage.CacheReadInputTokens
 			}
 			if firstTokenMs == nil && chatChunkStartsResponsesOutput(&chunk) {
 				elapsed := int(time.Since(startTime).Milliseconds())
@@ -751,12 +758,10 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 			return nil, writeResponsesCompatError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
 		}
 
-		if ccResp.Usage != nil {
-			usage.InputTokens = ccResp.Usage.PromptTokens
-			usage.OutputTokens = ccResp.Usage.CompletionTokens
-			if ccResp.Usage.PromptTokensDetails != nil {
-				usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
-			}
+		if parsedUsage, ok := openAIUsageFromGJSON(gjson.GetBytes(respBody, "usage")); ok {
+			usage.InputTokens = parsedUsage.InputTokens
+			usage.OutputTokens = parsedUsage.OutputTokens
+			usage.CacheReadInputTokens = parsedUsage.CacheReadInputTokens
 		}
 
 		responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, nil, nil, false, nil)
@@ -826,6 +831,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	SetActualOpenAIUpstreamEndpoint(c, vertexThirdPartyOpenAIEndpoint)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -941,12 +947,10 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 				continue
 			}
 
-			if chunk.Usage != nil {
-				usage.InputTokens = chunk.Usage.PromptTokens
-				usage.OutputTokens = chunk.Usage.CompletionTokens
-				if chunk.Usage.PromptTokensDetails != nil {
-					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
-				}
+			if chunkUsage := extractCCStreamUsage(trimmed); chunkUsage != nil {
+				usage.InputTokens = chunkUsage.InputTokens
+				usage.OutputTokens = chunkUsage.OutputTokens
+				usage.CacheReadInputTokens = chunkUsage.CacheReadInputTokens
 			}
 
 			if firstTokenMs == nil && len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != nil && *chunk.Choices[0].Delta.Content != "" {
@@ -986,10 +990,10 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to convert response to Anthropic format")
 		}
 
-		usage.InputTokens = ccResp.Usage.PromptTokens
-		usage.OutputTokens = ccResp.Usage.CompletionTokens
-		if ccResp.Usage.PromptTokensDetails != nil {
-			usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
+		if parsedUsage, ok := openAIUsageFromGJSON(gjson.GetBytes(respBody, "usage")); ok {
+			usage.InputTokens = parsedUsage.InputTokens
+			usage.OutputTokens = parsedUsage.OutputTokens
+			usage.CacheReadInputTokens = parsedUsage.CacheReadInputTokens
 		}
 
 		c.JSON(http.StatusOK, anthropicResp)

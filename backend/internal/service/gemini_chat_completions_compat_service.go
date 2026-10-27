@@ -115,6 +115,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	}
 	geminiReq = ensureGeminiFunctionCallThoughtSignatures(geminiReq)
 	geminiReq = applyGeminiCompatThinkingConfig(geminiReq, claudeBody, mappedModel, clientStream)
+	logVertexPromptHistoryDriftForGeminiBody(c, account, "chat_gemini", mappedModel, geminiReq)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

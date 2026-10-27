@@ -126,6 +126,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsResponses(
 		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
 	geminiReq = ensureGeminiFunctionCallThoughtSignatures(geminiReq)
+	logVertexPromptHistoryDriftForGeminiBody(c, account, "responses_gemini", mappedModel, geminiReq)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

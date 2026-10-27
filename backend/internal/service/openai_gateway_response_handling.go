@@ -1570,12 +1570,15 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 		value.Get("input_tokens_details.cached_tokens"),
 		value.Get("prompt_tokens_details.cached_tokens"),
 	} {
-		if nested.Exists() {
-			return max(int(nested.Int()), 0)
+		if nested.Exists() && nested.Int() > 0 {
+			return int(nested.Int())
 		}
 	}
 
+	// DeepSeek-compatible upstreams report automatic prefix-cache hits as a
+	// top-level prompt_cache_hit_tokens instead of prompt_tokens_details.
 	return firstPositiveGJSONInt(
+		value.Get("prompt_cache_hit_tokens"),
 		value.Get("cache_read_input_tokens"),
 		value.Get("cache_read_tokens"),
 		value.Get("cached_tokens"),
