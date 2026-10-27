@@ -292,6 +292,11 @@ func SanitizeUpstreamErrorMessage(message string) string {
 }
 
 func extractUpstreamErrorMessage(body []byte) string {
+	// Google Vertex AI OpenAPI array error: [{"error":{"message":"..."}}]
+	if m := gjson.GetBytes(body, "0.error.message").String(); strings.TrimSpace(m) != "" {
+		return strings.TrimSpace(m)
+	}
+
 	// Claude 风格：{"type":"error","error":{"type":"...","message":"..."}}
 	if m := gjson.GetBytes(body, "error.message").String(); strings.TrimSpace(m) != "" {
 		inner := strings.TrimSpace(m)

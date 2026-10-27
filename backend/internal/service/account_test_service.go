@@ -2592,6 +2592,39 @@ func (s *AccountTestService) buildGeminiOAuthRequest(ctx context.Context, accoun
 }
 
 func (s *AccountTestService) buildGeminiServiceAccountRequest(ctx context.Context, account *Account, modelID string, payload []byte) (*http.Request, error) {
+	if IsVertexThirdPartyMaaSModel(modelID) {
+		projectID := account.VertexProjectID()
+		if projectID == "" {
+			return nil, errors.New("vertex project_id is required for third-party maas models")
+		}
+		targetURL, err := buildVertexOpenAIEndpointURL(projectID, account.VertexLocation(modelID))
+		if err != nil {
+			return nil, err
+		}
+		normalizedModel := NormalizeVertexThirdPartyModelID(modelID)
+		ccPayload := map[string]any{
+			"model": normalizedModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": "hi"},
+			},
+			"stream":     true,
+			"max_tokens": 10,
+		}
+		b, err := json.Marshal(ccPayload)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(b))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := setVertexOpenAIAuth(ctx, req, account, s.geminiTokenProvider); err != nil {
+			return nil, fmt.Errorf("failed to authenticate vertex request: %w", err)
+		}
+		return req, nil
+	}
+
 	fullURL, err := buildVertexGeminiAccountURL(account, modelID, "streamGenerateContent", true)
 	if err != nil {
 		return nil, err
@@ -2727,6 +2760,18 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 		// - Gemini CLI: {"response": {"candidates": [...]}}
 		if resp, ok := data["response"].(map[string]any); ok && resp != nil {
 			data = resp
+		}
+		// Support OpenAI format (e.g. Vertex third-party MaaS models)
+		if choices, ok := data["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if delta, ok := choice["delta"].(map[string]any); ok {
+					if text, ok := delta["content"].(string); ok && text != "" {
+						s.sendEvent(c, TestEvent{Type: "content", Text: text})
+					}
+				} else if text, ok := choice["text"].(string); ok && text != "" {
+					s.sendEvent(c, TestEvent{Type: "content", Text: text})
+				}
+			}
 		}
 		if candidates, ok := data["candidates"].([]any); ok && len(candidates) > 0 {
 			if candidate, ok := candidates[0].(map[string]any); ok {

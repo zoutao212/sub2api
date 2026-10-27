@@ -42,6 +42,16 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
+	mappedModel := originalModel
+	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+		mappedModel = account.GetMappedModel(originalModel)
+	}
+
+	// Vertex AI 上的第三方 MaaS 模型（如 DeepSeek 等）走原生 OpenAI 兼容端点直转
+	if account.IsVertexServiceAccount() && IsVertexThirdPartyMaaSModel(mappedModel) {
+		return s.forwardVertexThirdPartyChatCompletions(ctx, c, account, body, originalModel, mappedModel, clientStream, includeUsage, startTime)
+	}
+
 	// 历史推理内容不回传给 Gemini：Gemini 的思考连续性由 thoughtSignature 承载。
 	for i := range ccReq.Messages {
 		ccReq.Messages[i].ReasoningContent = ""

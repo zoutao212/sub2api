@@ -551,6 +551,10 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		mappedModel = account.GetMappedModel(req.Model)
 	}
 
+	if account.IsVertexServiceAccount() && IsVertexThirdPartyMaaSModel(mappedModel) {
+		return s.forwardVertexThirdPartyClaudeMessages(ctx, c, account, body, originalModel, mappedModel, req.Stream, startTime)
+	}
+
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body)
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -1125,6 +1129,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	}
 	if action != "countTokens" && geminiImageGenerationDenied(c, body, originalModel, mappedModel) {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, ImageGenerationPermissionMessage())
+	}
+
+	// Vertex AI 上的第三方 MaaS 模型（如 DeepSeek 等）走原生 OpenAI 兼容端点直转
+	if account.IsVertexServiceAccount() && IsVertexThirdPartyMaaSModel(mappedModel) {
+		return s.forwardVertexThirdPartyNative(ctx, c, account, body, originalModel, mappedModel, action, stream, startTime)
 	}
 
 	proxyURL := ""
@@ -2031,6 +2040,15 @@ func mapGeminiErrorBodyToClaudeError(body []byte) *claudeErrorMapping {
 		return nil
 	}
 
+	payload := bytes.TrimSpace(body)
+	if len(payload) > 0 && payload[0] == '[' {
+		// Google Cloud Vertex AI OpenAPI wraps error in an array: [{"error": ...}]
+		firstObj := gjson.GetBytes(payload, "0").Raw
+		if firstObj != "" {
+			payload = []byte(firstObj)
+		}
+	}
+
 	var parsed struct {
 		Error struct {
 			Code    int    `json:"code"`
@@ -2038,7 +2056,7 @@ func mapGeminiErrorBodyToClaudeError(body []byte) *claudeErrorMapping {
 			Status  string `json:"status"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := json.Unmarshal(payload, &parsed); err != nil {
 		return nil
 	}
 	if strings.TrimSpace(parsed.Error.Status) == "" && parsed.Error.Code == 0 && strings.TrimSpace(parsed.Error.Message) == "" {

@@ -1,0 +1,753 @@
+package service
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/gin-gonic/gin"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+)
+
+// forwardVertexThirdPartyChatCompletions 直转客户端的 Chat Completions 请求到 Vertex AI 的
+// OpenAI 兼容端点 (endpoints/openapi/chat/completions)。
+// 适用于 account.platform=gemini && account.type=service_account，且目标模型为第三方 MaaS 模型（如 DeepSeek）。
+func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel string,
+	mappedModel string,
+	clientStream bool,
+	includeUsage bool,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	projectID := account.VertexProjectID()
+	if strings.TrimSpace(projectID) == "" {
+		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error",
+			"Vertex third-party models require project_id to be configured on the account")
+	}
+
+	location := account.VertexLocation(mappedModel)
+	targetURL, err := buildVertexOpenAIEndpointURL(projectID, location)
+	if err != nil {
+		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+
+	upstreamModel := NormalizeVertexThirdPartyModelID(mappedModel)
+	upstreamBody := body
+	if upstreamModel != originalModel {
+		upstreamBody = ReplaceModelInBody(body, upstreamModel)
+	}
+	if normBody, changed := NormalizeVertexOpenAIReasoningEffort(upstreamBody); changed {
+		upstreamBody = normBody
+	}
+
+	if clientStream {
+		if uBody, err := ensureOpenAIChatStreamUsage(upstreamBody); err == nil {
+			upstreamBody = uBody
+		}
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	buildReq := func(reqCtx context.Context) (*http.Request, string, error) {
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
+		if err != nil {
+			return nil, "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := setVertexOpenAIAuth(reqCtx, req, account, s.tokenProvider); err != nil {
+			return nil, "", err
+		}
+		return req, "x-request-id", nil
+	}
+
+	var resp *http.Response
+	var requestIDHeader string
+	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+		upstreamReq, idHeader, err := buildReq(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			if failoverErr := s.handleVertexServiceAccountNotFound(ctx, c, account, err); failoverErr != nil {
+				return nil, failoverErr
+			}
+			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", err.Error())
+		}
+		requestIDHeader = idHeader
+
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if err != nil {
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
+		}
+
+		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			if attempt < geminiMaxRetries {
+				sleepGeminiBackoff(attempt)
+				continue
+			}
+			resp = &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}
+			break
+		}
+		break
+	}
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	requestID := resp.Header.Get(requestIDHeader)
+	if requestID == "" {
+		requestID = resp.Header.Get("x-goog-request-id")
+	}
+	if requestID != "" {
+		c.Header("x-request-id", requestID)
+	}
+
+	if resp.StatusCode >= 400 {
+		respBody := s.readUpstreamErrorBody(resp)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+		logger.L().Warn("vertex third_party chat_completions upstream error",
+			zap.Int64("account_id", account.ID),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("target_url", targetURL),
+			zap.String("upstream_model", upstreamModel),
+			zap.String("upstream_resp", string(respBody)),
+		)
+		return nil, s.writeGeminiChatCompletionsMappedError(c, account, resp.StatusCode, requestID, respBody)
+	}
+
+	var usage ClaudeUsage
+	var firstTokenMs *int
+	clientDisconnect := false
+
+	if clientStream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 4*1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if payload, ok := extractOpenAISSEDataLine(line); ok {
+				trimmedPayload := strings.TrimSpace(payload)
+				if trimmedPayload != "[DONE]" {
+					if u := extractCCStreamUsage(trimmedPayload); u != nil {
+						usage.InputTokens = u.InputTokens
+						usage.OutputTokens = u.OutputTokens
+						usage.CacheReadInputTokens = u.CacheReadInputTokens
+					}
+					if firstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(trimmedPayload) {
+						elapsed := int(time.Since(startTime).Milliseconds())
+						firstTokenMs = &elapsed
+					}
+				}
+			}
+
+			if !clientDisconnect {
+				if _, err := c.Writer.WriteString(line + "\n"); err != nil {
+					clientDisconnect = true
+				} else {
+					c.Writer.Flush()
+				}
+			}
+		}
+	} else {
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		if err != nil {
+			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
+		}
+		usage.InputTokens = int(gjson.GetBytes(respBody, "usage.prompt_tokens").Int())
+		usage.OutputTokens = int(gjson.GetBytes(respBody, "usage.completion_tokens").Int())
+		usage.CacheReadInputTokens = int(gjson.GetBytes(respBody, "usage.prompt_tokens_details.cached_tokens").Int())
+
+		c.Data(http.StatusOK, "application/json", respBody)
+	}
+
+	return &ForwardResult{
+		RequestID:        requestID,
+		UpstreamHeaders:  resp.Header,
+		Usage:            usage,
+		Model:            originalModel,
+		UpstreamModel:    upstreamModel,
+		Stream:           clientStream,
+		Duration:         time.Since(startTime),
+		FirstTokenMs:     firstTokenMs,
+		ClientDisconnect: clientDisconnect,
+	}, nil
+}
+
+// forwardVertexThirdPartyNative 处理通过 Gemini 原生端点（/v1beta/models/...:generateContent）发起的第三方 MaaS 模型请求。
+func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel string,
+	mappedModel string,
+	action string,
+	stream bool,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	if action != "generateContent" && action != "streamGenerateContent" {
+		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Unsupported action for third-party model: "+action)
+	}
+
+	projectID := account.VertexProjectID()
+	if strings.TrimSpace(projectID) == "" {
+		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Vertex third-party models require project_id to be configured on the account")
+	}
+
+	location := account.VertexLocation(mappedModel)
+	targetURL, err := buildVertexOpenAIEndpointURL(projectID, location)
+	if err != nil {
+		return nil, s.writeGoogleError(c, http.StatusBadRequest, err.Error())
+	}
+
+	upstreamModel := NormalizeVertexThirdPartyModelID(mappedModel)
+
+	messages := make([]map[string]any, 0)
+
+	sysParts := gjson.GetBytes(body, "systemInstruction.parts").Array()
+	if len(sysParts) > 0 {
+		var sysText strings.Builder
+		for _, p := range sysParts {
+			if t := p.Get("text").String(); t != "" {
+				if sysText.Len() > 0 {
+					sysText.WriteString("\n")
+				}
+				sysText.WriteString(t)
+			}
+		}
+		if sysText.Len() > 0 {
+			messages = append(messages, map[string]any{
+				"role":    "system",
+				"content": sysText.String(),
+			})
+		}
+	}
+
+	contents := gjson.GetBytes(body, "contents").Array()
+	for _, item := range contents {
+		role := item.Get("role").String()
+		if role == "model" {
+			role = "assistant"
+		} else if role == "" {
+			role = "user"
+		}
+
+		parts := item.Get("parts").Array()
+		var textBuilder strings.Builder
+		for _, p := range parts {
+			if t := p.Get("text").String(); t != "" {
+				if textBuilder.Len() > 0 {
+					textBuilder.WriteString("\n")
+				}
+				textBuilder.WriteString(t)
+			}
+		}
+
+		messages = append(messages, map[string]any{
+			"role":    role,
+			"content": textBuilder.String(),
+		})
+	}
+
+	chatPayload := map[string]any{
+		"model":    upstreamModel,
+		"messages": messages,
+		"stream":   stream,
+	}
+
+	if temp := gjson.GetBytes(body, "generationConfig.temperature"); temp.Exists() {
+		chatPayload["temperature"] = temp.Float()
+	}
+	if topP := gjson.GetBytes(body, "generationConfig.topP"); topP.Exists() {
+		chatPayload["top_p"] = topP.Float()
+	}
+	if maxTokens := gjson.GetBytes(body, "generationConfig.maxOutputTokens"); maxTokens.Exists() {
+		chatPayload["max_tokens"] = maxTokens.Int()
+	}
+
+	chatBody, err := json.Marshal(chatPayload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completions request: %w", err)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	buildReq := func(reqCtx context.Context) (*http.Request, string, error) {
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, targetURL, bytes.NewReader(chatBody))
+		if err != nil {
+			return nil, "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := setVertexOpenAIAuth(reqCtx, req, account, s.tokenProvider); err != nil {
+			return nil, "", err
+		}
+		return req, "x-request-id", nil
+	}
+
+	var resp *http.Response
+	var requestIDHeader string
+	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+		upstreamReq, idHeader, err := buildReq(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			if failoverErr := s.handleVertexServiceAccountNotFound(ctx, c, account, err); failoverErr != nil {
+				return nil, failoverErr
+			}
+			return nil, s.writeGoogleError(c, http.StatusBadGateway, err.Error())
+		}
+		requestIDHeader = idHeader
+
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if err != nil {
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
+		}
+
+		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			if attempt < geminiMaxRetries {
+				sleepGeminiBackoff(attempt)
+				continue
+			}
+			resp = &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}
+			break
+		}
+		break
+	}
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	requestID := resp.Header.Get(requestIDHeader)
+	if requestID == "" {
+		requestID = resp.Header.Get("x-goog-request-id")
+	}
+	if requestID != "" {
+		c.Header("x-request-id", requestID)
+	}
+
+	if resp.StatusCode >= 400 {
+		respBody := s.readUpstreamErrorBody(resp)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+		return nil, s.writeGoogleError(c, resp.StatusCode, string(respBody))
+	}
+
+	var usage ClaudeUsage
+	var firstTokenMs *int
+	clientDisconnect := false
+
+	if stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 4*1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			payload, ok := extractOpenAISSEDataLine(line)
+			if !ok {
+				continue
+			}
+			trimmed := strings.TrimSpace(payload)
+			if trimmed == "[DONE]" {
+				c.Writer.Flush()
+				break
+			}
+
+			var chunk apicompat.ChatCompletionsChunk
+			if err := json.Unmarshal([]byte(trimmed), &chunk); err != nil {
+				continue
+			}
+
+			if chunk.Usage != nil {
+				usage.InputTokens = chunk.Usage.PromptTokens
+				usage.OutputTokens = chunk.Usage.CompletionTokens
+				if chunk.Usage.PromptTokensDetails != nil {
+					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				}
+			}
+
+			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != nil && *chunk.Choices[0].Delta.Content != "" {
+				text := *chunk.Choices[0].Delta.Content
+				if firstTokenMs == nil {
+					elapsed := int(time.Since(startTime).Milliseconds())
+					firstTokenMs = &elapsed
+				}
+				geminiChunk := map[string]any{
+					"candidates": []map[string]any{
+						{
+							"content": map[string]any{
+								"parts": []map[string]any{
+									{"text": text},
+								},
+								"role": "model",
+							},
+						},
+					},
+				}
+				b, _ := json.Marshal(geminiChunk)
+				if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", b); err != nil {
+					clientDisconnect = true
+					break
+				}
+				c.Writer.Flush()
+			}
+		}
+	} else {
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		if err != nil {
+			return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream response")
+		}
+
+		var ccResp apicompat.ChatCompletionsResponse
+		if err := json.Unmarshal(respBody, &ccResp); err != nil {
+			return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to parse upstream response")
+		}
+
+		replyText := ""
+		if len(ccResp.Choices) > 0 {
+			var str string
+			if err := json.Unmarshal(ccResp.Choices[0].Message.Content, &str); err == nil {
+				replyText = str
+			} else {
+				replyText = string(ccResp.Choices[0].Message.Content)
+			}
+		}
+
+		var promptTokens, completionTokens, totalTokens int
+		if ccResp.Usage != nil {
+			promptTokens = ccResp.Usage.PromptTokens
+			completionTokens = ccResp.Usage.CompletionTokens
+			totalTokens = ccResp.Usage.TotalTokens
+			usage.InputTokens = ccResp.Usage.PromptTokens
+			usage.OutputTokens = ccResp.Usage.CompletionTokens
+			if ccResp.Usage.PromptTokensDetails != nil {
+				usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
+			}
+		}
+
+		geminiResp := map[string]any{
+			"candidates": []map[string]any{
+				{
+					"content": map[string]any{
+						"parts": []map[string]any{
+							{"text": replyText},
+						},
+						"role": "model",
+					},
+					"finishReason": "STOP",
+				},
+			},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     promptTokens,
+				"candidatesTokenCount": completionTokens,
+				"totalTokenCount":      totalTokens,
+			},
+		}
+
+		c.JSON(http.StatusOK, geminiResp)
+	}
+
+	return &ForwardResult{
+		RequestID:        requestID,
+		UpstreamHeaders:  resp.Header,
+		Usage:            usage,
+		Model:            originalModel,
+		UpstreamModel:    upstreamModel,
+		Stream:           stream,
+		Duration:         time.Since(startTime),
+		FirstTokenMs:     firstTokenMs,
+		ClientDisconnect: clientDisconnect,
+	}, nil
+}
+
+// forwardVertexThirdPartyClaudeMessages 将 Claude /v1/messages 请求转为 Chat Completions 请求，
+// 发送至 Vertex AI 的 OpenAI 兼容端点，并将响应转回 Claude Messages 格式。
+func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel string,
+	mappedModel string,
+	clientStream bool,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	var anthropicReq apicompat.AnthropicRequest
+	if err := json.Unmarshal(body, &anthropicReq); err != nil {
+		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+	}
+
+	chatReq, err := apicompat.AnthropicToChatCompletionsRequest(&anthropicReq)
+	if err != nil {
+		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+	upstreamModel := NormalizeVertexThirdPartyModelID(mappedModel)
+	chatReq.Model = upstreamModel
+	chatReq.Stream = clientStream
+	if clientStream {
+		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
+	}
+
+	chatBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completions request: %w", err)
+	}
+	if normBody, changed := NormalizeVertexOpenAIReasoningEffort(chatBody); changed {
+		chatBody = normBody
+	}
+
+	projectID := account.VertexProjectID()
+	if strings.TrimSpace(projectID) == "" {
+		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error",
+			"Vertex third-party models require project_id to be configured on the account")
+	}
+
+	location := account.VertexLocation(mappedModel)
+	targetURL, err := buildVertexOpenAIEndpointURL(projectID, location)
+	if err != nil {
+		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	buildReq := func(reqCtx context.Context) (*http.Request, string, error) {
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, targetURL, bytes.NewReader(chatBody))
+		if err != nil {
+			return nil, "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := setVertexOpenAIAuth(reqCtx, req, account, s.tokenProvider); err != nil {
+			return nil, "", err
+		}
+		return req, "x-request-id", nil
+	}
+
+	var resp *http.Response
+	var requestIDHeader string
+	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+		upstreamReq, idHeader, err := buildReq(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			if failoverErr := s.handleVertexServiceAccountNotFound(ctx, c, account, err); failoverErr != nil {
+				return nil, failoverErr
+			}
+			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", err.Error())
+		}
+		requestIDHeader = idHeader
+
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if err != nil {
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
+		}
+
+		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			if attempt < geminiMaxRetries {
+				sleepGeminiBackoff(attempt)
+				continue
+			}
+			resp = &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}
+			break
+		}
+		break
+	}
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	requestID := resp.Header.Get(requestIDHeader)
+	if requestID == "" {
+		requestID = resp.Header.Get("x-goog-request-id")
+	}
+	if requestID != "" {
+		c.Header("x-request-id", requestID)
+	}
+
+	if resp.StatusCode >= 400 {
+		respBody := s.readUpstreamErrorBody(resp)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+		return nil, s.writeClaudeError(c, resp.StatusCode, "upstream_error", string(respBody))
+	}
+
+	var usage ClaudeUsage
+	var firstTokenMs *int
+	clientDisconnect := false
+
+	if clientStream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 4*1024*1024)
+
+		state := apicompat.NewChatCompletionsToAnthropicStreamState(originalModel)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			payload, ok := extractOpenAISSEDataLine(line)
+			if !ok {
+				continue
+			}
+			trimmed := strings.TrimSpace(payload)
+			if trimmed == "[DONE]" {
+				c.Writer.Flush()
+				break
+			}
+
+			var chunk apicompat.ChatCompletionsChunk
+			if err := json.Unmarshal([]byte(trimmed), &chunk); err != nil {
+				continue
+			}
+
+			if chunk.Usage != nil {
+				usage.InputTokens = chunk.Usage.PromptTokens
+				usage.OutputTokens = chunk.Usage.CompletionTokens
+				if chunk.Usage.PromptTokensDetails != nil {
+					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				}
+			}
+
+			if firstTokenMs == nil && len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != nil && *chunk.Choices[0].Delta.Content != "" {
+				elapsed := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &elapsed
+			}
+
+			events := apicompat.ChatCompletionsChunkToAnthropicEvents(&chunk, state)
+			for _, ev := range events {
+				sse, err := apicompat.ResponsesAnthropicEventToSSE(ev)
+				if err != nil {
+					continue
+				}
+				if _, err := c.Writer.WriteString(sse); err != nil {
+					clientDisconnect = true
+					break
+				}
+				c.Writer.Flush()
+			}
+			if clientDisconnect {
+				break
+			}
+		}
+	} else {
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		if err != nil {
+			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
+		}
+
+		var ccResp apicompat.ChatCompletionsResponse
+		if err := json.Unmarshal(respBody, &ccResp); err != nil {
+			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+		}
+
+		anthropicResp := apicompat.ChatCompletionsResponseToAnthropic(&ccResp, originalModel)
+		if anthropicResp == nil {
+			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to convert response to Anthropic format")
+		}
+
+		usage.InputTokens = ccResp.Usage.PromptTokens
+		usage.OutputTokens = ccResp.Usage.CompletionTokens
+		if ccResp.Usage.PromptTokensDetails != nil {
+			usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
+		}
+
+		c.JSON(http.StatusOK, anthropicResp)
+	}
+
+	return &ForwardResult{
+		RequestID:        requestID,
+		UpstreamHeaders:  resp.Header,
+		Usage:            usage,
+		Model:            originalModel,
+		UpstreamModel:    upstreamModel,
+		Stream:           clientStream,
+		Duration:         time.Since(startTime),
+		FirstTokenMs:     firstTokenMs,
+		ClientDisconnect: clientDisconnect,
+	}, nil
+}

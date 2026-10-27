@@ -20,6 +20,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -346,7 +348,11 @@ func buildVertexGeminiExpressURL(model, action string, stream bool) (string, err
 	if err := validateVertexGeminiAction(action); err != nil {
 		return "", err
 	}
-	u := fmt.Sprintf("https://%s/v1/publishers/google/models/%s:%s", vertexGlobalHost, url.PathEscape(model), action)
+	modelPath := "publishers/google/models/" + url.PathEscape(model)
+	if strings.HasPrefix(strings.ToLower(model), "publishers/") {
+		modelPath = model
+	}
+	u := fmt.Sprintf("https://%s/v1/%s:%s", vertexGlobalHost, modelPath, action)
 	if stream {
 		u += "?alt=sse"
 	}
@@ -408,12 +414,16 @@ func buildVertexGeminiURL(projectID, location, model, action string, stream bool
 	if location == "global" {
 		host = vertexGlobalHost
 	}
+	modelPath := "publishers/google/models/" + url.PathEscape(model)
+	if strings.HasPrefix(strings.ToLower(model), "publishers/") {
+		modelPath = model
+	}
 	u := fmt.Sprintf(
-		"https://%s/v1/projects/%s/locations/%s/publishers/google/models/%s:%s",
+		"https://%s/v1/projects/%s/locations/%s/%s:%s",
 		host,
 		url.PathEscape(projectID),
 		url.PathEscape(location),
-		url.PathEscape(model),
+		modelPath,
 		action,
 	)
 	if stream {
@@ -476,4 +486,156 @@ func buildVertexAnthropicRequestBody(body []byte) ([]byte, error) {
 	delete(payload, "model")
 	payload["anthropic_version"] = vertexAnthropicVersion
 	return json.Marshal(payload)
+}
+
+// IsVertexThirdPartyMaaSModel 判断模型是否为 Vertex AI / Agent Platform 上的第三方 MaaS 模型。
+// 匹配规则：
+// 1. 包含 publishers/ 且不以 publishers/google/ 开头（如 publishers/deepseek-ai/...）
+// 2. 以 deepseek-ai/ 开头
+// 3. 以 deepseek- 开头（如 deepseek-v4.1-flash-maas）
+func IsVertexThirdPartyMaaSModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	if strings.HasPrefix(m, "publishers/") {
+		return !strings.HasPrefix(m, "publishers/google/")
+	}
+	if strings.HasPrefix(m, "deepseek-ai/") || strings.HasPrefix(m, "deepseek-") {
+		return true
+	}
+	return false
+}
+
+// NormalizeVertexThirdPartyModelID 将第三方模型名称归一化为 Vertex OpenAI 端点识别的 model 格式。
+// 例如：
+// publishers/deepseek-ai/models/deepseek-v4.1-flash-maas -> deepseek-ai/deepseek-v4.1-flash-maas
+// deepseek-v4.1-flash-maas -> deepseek-ai/deepseek-v4.1-flash-maas
+func NormalizeVertexThirdPartyModelID(model string) string {
+	trimmed := strings.TrimSpace(model)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "publishers/") {
+		rest := trimmed[len("publishers/"):]
+		if idx := strings.Index(strings.ToLower(rest), "/models/"); idx != -1 {
+			publisher := rest[:idx]
+			modelID := rest[idx+len("/models/"):]
+			return publisher + "/" + modelID
+		}
+		return rest
+	}
+	if strings.HasPrefix(lower, "deepseek-") && !strings.HasPrefix(lower, "deepseek-ai/") {
+		return "deepseek-ai/" + trimmed
+	}
+	return trimmed
+}
+
+// NormalizeVertexOpenAIReasoningEffort 将客户端请求中的 reasoning_effort 规范化为 Vertex AI OpenAI 端点支持的枚举值。
+// Vertex AI 允许的值集合为: 'minimal', 'low', 'medium', 'high', 'max'。
+// 客户端常见的 'xhigh'/'extrahigh' 映射为最高级别的 'max'；
+// 'none'/'off'/'disabled'/'auto' 等非标准值则从请求体中安全移除，交由模型默认处理。
+func NormalizeVertexOpenAIReasoningEffort(body []byte) ([]byte, bool) {
+	if len(body) == 0 {
+		return body, false
+	}
+
+	paths := []string{"reasoning_effort", "reasoning.effort"}
+	modified := body
+	changed := false
+
+	for _, p := range paths {
+		res := gjson.GetBytes(modified, p)
+		if !res.Exists() || res.Type != gjson.String {
+			continue
+		}
+		raw := strings.TrimSpace(res.String())
+		if raw == "" {
+			continue
+		}
+
+		token := strings.ToLower(raw)
+		token = strings.NewReplacer("-", "", "_", "", " ", "").Replace(token)
+
+		var target string
+		deleteField := false
+
+		switch token {
+		case "xhigh", "extrahigh", "extreme", "ultracode", "max":
+			target = "max"
+		case "high":
+			target = "high"
+		case "medium", "default", "normal":
+			target = "medium"
+		case "low":
+			target = "low"
+		case "minimal", "minimum", "min":
+			target = "minimal"
+		case "none", "off", "disabled", "auto", "0":
+			deleteField = true
+		default:
+			target = "medium"
+		}
+
+		if deleteField {
+			newBody, err := sjson.DeleteBytes(modified, p)
+			if err == nil {
+				modified = newBody
+				changed = true
+			}
+		} else if target != "" && target != raw {
+			newBody, err := sjson.SetBytes(modified, p, target)
+			if err == nil {
+				modified = newBody
+				changed = true
+			}
+		}
+	}
+
+	return modified, changed
+}
+
+// buildVertexOpenAIEndpointURL 构造 Vertex AI OpenAI-compatible chat completions 请求地址。
+func buildVertexOpenAIEndpointURL(projectID, location string) (string, error) {
+	projectID = strings.TrimSpace(projectID)
+	location = strings.TrimSpace(location)
+	if projectID == "" {
+		return "", errors.New("vertex project_id is required for third-party maas models")
+	}
+	if location == "" {
+		location = vertexDefaultLocation
+	}
+	if !vertexLocationPattern.MatchString(location) {
+		return "", fmt.Errorf("invalid vertex location: %s", location)
+	}
+	host := fmt.Sprintf("%s-aiplatform.googleapis.com", location)
+	if location == "global" {
+		host = vertexGlobalHost
+	}
+	return fmt.Sprintf(
+		"https://%s/v1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
+		host,
+		url.PathEscape(projectID),
+		url.PathEscape(location),
+	), nil
+}
+
+// setVertexOpenAIAuth 给 Vertex AI OpenAI 兼容端点请求设置认证头。
+func setVertexOpenAIAuth(ctx context.Context, req *http.Request, account *Account, tokenProvider *GeminiTokenProvider) error {
+	if account.IsVertexAPIKey() {
+		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+		if apiKey == "" {
+			return errors.New("vertex api_key not configured")
+		}
+		req.Header.Set("x-goog-api-key", apiKey)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		return nil
+	}
+	if tokenProvider == nil {
+		return errors.New("gemini token provider not configured")
+	}
+	accessToken, err := tokenProvider.GetAccessToken(ctx, account)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	return nil
 }

@@ -226,3 +226,123 @@ func contextWithTestTimeout(t *testing.T) context.Context {
 	t.Cleanup(cancel)
 	return ctx
 }
+
+func TestIsVertexThirdPartyMaaSModel(t *testing.T) {
+	// 期望判定为第三方 MaaS 模型
+	require.True(t, IsVertexThirdPartyMaaSModel("publishers/deepseek-ai/models/deepseek-v4.1-flash-maas"))
+	require.True(t, IsVertexThirdPartyMaaSModel("deepseek-ai/deepseek-v4.1-flash-maas"))
+	require.True(t, IsVertexThirdPartyMaaSModel("deepseek-v4.1-flash-maas"))
+	require.True(t, IsVertexThirdPartyMaaSModel("deepseek-r1-0528-maas"))
+	require.True(t, IsVertexThirdPartyMaaSModel("publishers/meta/models/llama-3.3-70b-instruct-maas"))
+
+	// 期望判定为 Google 原生模型（非第三方）
+	require.False(t, IsVertexThirdPartyMaaSModel("gemini-2.5-flash"))
+	require.False(t, IsVertexThirdPartyMaaSModel("publishers/google/models/gemini-2.5-pro"))
+	require.False(t, IsVertexThirdPartyMaaSModel("gemini-1.5-pro"))
+	require.False(t, IsVertexThirdPartyMaaSModel(""))
+}
+
+func TestNormalizeVertexThirdPartyModelID(t *testing.T) {
+	require.Equal(t, "deepseek-ai/deepseek-v4.1-flash-maas", NormalizeVertexThirdPartyModelID("publishers/deepseek-ai/models/deepseek-v4.1-flash-maas"))
+	require.Equal(t, "deepseek-ai/deepseek-v4.1-flash-maas", NormalizeVertexThirdPartyModelID("deepseek-v4.1-flash-maas"))
+	require.Equal(t, "deepseek-ai/deepseek-v4.1-flash-maas", NormalizeVertexThirdPartyModelID("deepseek-ai/deepseek-v4.1-flash-maas"))
+	require.Equal(t, "meta/llama-3.3-70b", NormalizeVertexThirdPartyModelID("publishers/meta/models/llama-3.3-70b"))
+}
+
+func TestBuildVertexOpenAIEndpointURL(t *testing.T) {
+	u, err := buildVertexOpenAIEndpointURL("my-project", "us-central1")
+	require.NoError(t, err)
+	require.Equal(t, "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/endpoints/openapi/chat/completions", u)
+
+	uGlobal, err := buildVertexOpenAIEndpointURL("my-project", "global")
+	require.NoError(t, err)
+	require.Equal(t, "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/endpoints/openapi/chat/completions", uGlobal)
+
+	_, err = buildVertexOpenAIEndpointURL("", "us-central1")
+	require.ErrorContains(t, err, "vertex project_id is required")
+
+	_, err = buildVertexOpenAIEndpointURL("my-project", "invalid/loc")
+	require.ErrorContains(t, err, "invalid vertex location")
+}
+
+func TestNormalizeVertexOpenAIReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		wantChanged bool
+		check       func(t *testing.T, body []byte)
+	}{
+		{
+			name:        "xhigh mapped to max",
+			input:       `{"model":"deepseek","reasoning_effort":"xhigh"}`,
+			wantChanged: true,
+			check: func(t *testing.T, body []byte) {
+				require.Equal(t, "max", gjson.GetBytes(body, "reasoning_effort").String())
+			},
+		},
+		{
+			name:        "extrahigh mapped to max",
+			input:       `{"model":"deepseek","reasoning_effort":"extrahigh"}`,
+			wantChanged: true,
+			check: func(t *testing.T, body []byte) {
+				require.Equal(t, "max", gjson.GetBytes(body, "reasoning_effort").String())
+			},
+		},
+		{
+			name:        "high kept as high",
+			input:       `{"model":"deepseek","reasoning_effort":"high"}`,
+			wantChanged: false,
+			check: func(t *testing.T, body []byte) {
+				require.Equal(t, "high", gjson.GetBytes(body, "reasoning_effort").String())
+			},
+		},
+		{
+			name:        "medium kept as medium",
+			input:       `{"model":"deepseek","reasoning_effort":"medium"}`,
+			wantChanged: false,
+			check: func(t *testing.T, body []byte) {
+				require.Equal(t, "medium", gjson.GetBytes(body, "reasoning_effort").String())
+			},
+		},
+		{
+			name:        "auto is deleted",
+			input:       `{"model":"deepseek","reasoning_effort":"auto","messages":[]}`,
+			wantChanged: true,
+			check: func(t *testing.T, body []byte) {
+				require.False(t, gjson.GetBytes(body, "reasoning_effort").Exists())
+			},
+		},
+		{
+			name:        "none is deleted",
+			input:       `{"model":"deepseek","reasoning_effort":"none","messages":[]}`,
+			wantChanged: true,
+			check: func(t *testing.T, body []byte) {
+				require.False(t, gjson.GetBytes(body, "reasoning_effort").Exists())
+			},
+		},
+		{
+			name:        "nested reasoning.effort xhigh mapped to max",
+			input:       `{"model":"deepseek","reasoning":{"effort":"xhigh"}}`,
+			wantChanged: true,
+			check: func(t *testing.T, body []byte) {
+				require.Equal(t, "max", gjson.GetBytes(body, "reasoning.effort").String())
+			},
+		},
+		{
+			name:        "no effort untouched",
+			input:       `{"model":"deepseek","messages":[]}`,
+			wantChanged: false,
+			check: func(t *testing.T, body []byte) {
+				require.False(t, gjson.GetBytes(body, "reasoning_effort").Exists())
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, changed := NormalizeVertexOpenAIReasoningEffort([]byte(tt.input))
+			require.Equal(t, tt.wantChanged, changed)
+			tt.check(t, got)
+		})
+	}
+}
