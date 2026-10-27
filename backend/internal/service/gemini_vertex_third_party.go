@@ -523,6 +523,262 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 	}, nil
 }
 
+// forwardVertexThirdPartyResponses 将 OpenAI Responses 请求转为 Chat Completions 请求，
+// 发送至 Vertex AI 的 OpenAI 兼容端点，并将响应转回 Responses 格式。
+func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel string,
+	mappedModel string,
+	clientToolMapping apicompat.ResponsesClientToolMapping,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	var responsesReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+	}
+
+	clientStream := responsesReq.Stream
+
+	chatReq, err := apicompat.ResponsesToChatCompletionsRequest(&responsesReq)
+	if err != nil {
+		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+	upstreamModel := NormalizeVertexThirdPartyModelID(mappedModel)
+	chatReq.Model = upstreamModel
+	chatReq.Stream = clientStream
+	if clientStream {
+		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
+	}
+
+	chatBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completions request: %w", err)
+	}
+	if normBody, changed := NormalizeVertexOpenAIReasoningEffort(chatBody); changed {
+		chatBody = normBody
+	}
+
+	projectID := account.VertexProjectID()
+	if strings.TrimSpace(projectID) == "" {
+		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error",
+			"Vertex third-party models require project_id to be configured on the account")
+	}
+
+	location := account.VertexLocation(mappedModel)
+	targetURL, err := buildVertexOpenAIEndpointURL(projectID, location)
+	if err != nil {
+		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	buildReq := func(reqCtx context.Context) (*http.Request, string, error) {
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, targetURL, bytes.NewReader(chatBody))
+		if err != nil {
+			return nil, "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if err := setVertexOpenAIAuth(reqCtx, req, account, s.tokenProvider); err != nil {
+			return nil, "", err
+		}
+		return req, "x-request-id", nil
+	}
+
+	var resp *http.Response
+	var requestIDHeader string
+	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+		upstreamReq, idHeader, err := buildReq(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			if failoverErr := s.handleVertexServiceAccountNotFound(ctx, c, account, err); failoverErr != nil {
+				return nil, failoverErr
+			}
+			return nil, writeResponsesCompatError(c, http.StatusBadGateway, "upstream_error", err.Error())
+		}
+		requestIDHeader = idHeader
+
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if err != nil {
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
+		}
+
+		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			if attempt < geminiMaxRetries {
+				sleepGeminiBackoff(attempt)
+				continue
+			}
+			resp = &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}
+			break
+		}
+		break
+	}
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	requestID := resp.Header.Get(requestIDHeader)
+	if requestID == "" {
+		requestID = resp.Header.Get("x-goog-request-id")
+	}
+	if requestID != "" {
+		c.Header("x-request-id", requestID)
+	}
+
+	if resp.StatusCode >= 400 {
+		respBody := s.readUpstreamErrorBody(resp)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+		return nil, s.writeGeminiResponsesMappedError(c, account, resp.StatusCode, requestID, respBody)
+	}
+
+	var usage ClaudeUsage
+	var firstTokenMs *int
+	clientDisconnect := false
+
+	if clientStream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		state := apicompat.NewChatCompletionsToResponsesStreamState(originalModel)
+		restorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
+		writeEvents := func(events []apicompat.ResponsesStreamEvent) {
+			if clientDisconnect {
+				return
+			}
+			for _, event := range events {
+				payload, err := json.Marshal(event)
+				if err != nil {
+					continue
+				}
+				payload = reverseToolNamesIfPresent(c, payload)
+				payloads, _, err := restorer.RestoreEvent(payload)
+				if err != nil {
+					continue
+				}
+				for _, restored := range payloads {
+					eventType := gjson.GetBytes(restored, "type").String()
+					if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
+						clientDisconnect = true
+						return
+					}
+				}
+			}
+			c.Writer.Flush()
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 4*1024*1024)
+
+		for scanner.Scan() {
+			payload, ok := extractOpenAISSEDataLine(scanner.Text())
+			if !ok {
+				continue
+			}
+			trimmed := strings.TrimSpace(payload)
+			if trimmed == "[DONE]" {
+				break
+			}
+
+			var chunk apicompat.ChatCompletionsChunk
+			if err := json.Unmarshal([]byte(trimmed), &chunk); err != nil {
+				continue
+			}
+
+			if chunk.Usage != nil {
+				usage.InputTokens = chunk.Usage.PromptTokens
+				usage.OutputTokens = chunk.Usage.CompletionTokens
+				if chunk.Usage.PromptTokensDetails != nil {
+					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				}
+			}
+			if firstTokenMs == nil && chatChunkStartsResponsesOutput(&chunk) {
+				elapsed := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &elapsed
+			}
+
+			writeEvents(apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state))
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			return nil, fmt.Errorf("vertex third_party responses stream read error: %w", scanErr)
+		}
+		if err := state.ValidateToolCallArguments(); err != nil {
+			return nil, fmt.Errorf("invalid tool call arguments from upstream: %w", err)
+		}
+
+		writeEvents(apicompat.FinalizeChatCompletionsResponsesStream(state))
+		if !clientDisconnect {
+			if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
+				clientDisconnect = true
+			}
+			if !clientDisconnect {
+				c.Writer.Flush()
+			}
+		}
+	} else {
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		if err != nil {
+			return nil, writeResponsesCompatError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
+		}
+
+		var ccResp apicompat.ChatCompletionsResponse
+		if err := json.Unmarshal(respBody, &ccResp); err != nil {
+			return nil, writeResponsesCompatError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+		}
+
+		if ccResp.Usage != nil {
+			usage.InputTokens = ccResp.Usage.PromptTokens
+			usage.OutputTokens = ccResp.Usage.CompletionTokens
+			if ccResp.Usage.PromptTokensDetails != nil {
+				usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
+			}
+		}
+
+		responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, nil, nil, false, nil)
+		if responsesResp == nil {
+			return nil, writeResponsesCompatError(c, http.StatusBadGateway, "upstream_error", "Failed to convert response to Responses format")
+		}
+		writeResponsesJSON(c, s, resp, responsesResp, clientToolMapping)
+	}
+
+	return &ForwardResult{
+		RequestID:        requestID,
+		UpstreamHeaders:  resp.Header,
+		Usage:            usage,
+		Model:            originalModel,
+		UpstreamModel:    upstreamModel,
+		Stream:           clientStream,
+		Duration:         time.Since(startTime),
+		FirstTokenMs:     firstTokenMs,
+		ClientDisconnect: clientDisconnect,
+	}, nil
+}
+
 // forwardVertexThirdPartyClaudeMessages 将 Claude /v1/messages 请求转为 Chat Completions 请求，
 // 发送至 Vertex AI 的 OpenAI 兼容端点，并将响应转回 Claude Messages 格式。
 func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(

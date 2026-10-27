@@ -71,6 +71,16 @@ func (s *GeminiMessagesCompatService) ForwardAsResponses(
 	originalModel := responsesReq.Model
 	clientStream := responsesReq.Stream
 
+	mappedModel := originalModel
+	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+		mappedModel = account.GetMappedModel(originalModel)
+	}
+	// Vertex AI 上的第三方 MaaS 模型（如 DeepSeek）只提供 OpenAI 兼容端点，
+	// 不能按 Gemini generateContent 的 functionDeclarations 形状转发。
+	if account.IsVertexServiceAccount() && IsVertexThirdPartyMaaSModel(mappedModel) {
+		return s.forwardVertexThirdPartyResponses(ctx, c, account, adaptedBody, originalModel, mappedModel, clientToolMapping, startTime)
+	}
+
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
 	if err != nil {
 		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())

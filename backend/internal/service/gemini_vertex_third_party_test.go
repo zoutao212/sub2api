@@ -247,6 +247,143 @@ func TestForwardNative_VertexThirdPartyMaaS_NonStreaming(t *testing.T) {
 	require.Equal(t, 5, result.Usage.OutputTokens)
 }
 
+func TestForwardAsResponses_VertexThirdPartyMaaS_RoutesToOpenAICompatibleEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamResponse := `{"id":"chatcmpl-123","object":"chat.completion","model":"deepseek-ai/deepseek-v4.1-flash-maas","choices":[{"index":0,"message":{"role":"assistant","content":"hello from responses bridge"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":4}}}`
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"upstream-req-123"}},
+			Body:       io.NopCloser(bytes.NewReader([]byte(upstreamResponse))),
+		},
+	}
+
+	svc := &GeminiMessagesCompatService{
+		httpUpstream: httpStub,
+		cfg:          &config.Config{},
+	}
+
+	account := newGeminiVertexThirdPartyTestAccount("apikey", "gen-lang-client-0476190420")
+	reqBody := []byte(`{"model":"publishers/deepseek-ai/models/deepseek-v4.1-flash-maas","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"lookup","description":"look up","parameters":{"type":"object","properties":{"map":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"pattern":"^[a-z]+$"}}},"required":["map"]}}]}`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+
+	result, err := svc.ForwardAsResponses(context.Background(), c, account, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	capturedReq := httpStub.lastReq
+	require.NotNil(t, capturedReq)
+
+	expectedURL := "https://us-central1-aiplatform.googleapis.com/v1/projects/gen-lang-client-0476190420/locations/us-central1/endpoints/openapi/chat/completions"
+	require.Equal(t, expectedURL, capturedReq.URL.String())
+	require.Equal(t, "test-api-key", capturedReq.Header.Get("x-goog-api-key"))
+
+	capturedBody, _ := io.ReadAll(capturedReq.Body)
+	require.Equal(t, "deepseek-ai/deepseek-v4.1-flash-maas", gjson.GetBytes(capturedBody, "model").String())
+	require.Equal(t, "user", gjson.GetBytes(capturedBody, "messages.0.role").String())
+	require.False(t, gjson.GetBytes(capturedBody, "contents").Exists())
+	require.False(t, gjson.GetBytes(capturedBody, "tools.0.functionDeclarations").Exists())
+	require.Equal(t, "function", gjson.GetBytes(capturedBody, "tools.0.type").String())
+	require.Equal(t, "lookup", gjson.GetBytes(capturedBody, "tools.0.function.name").String())
+	// OpenAI 兼容端点原样接收 propertyNames，不再被 Gemini proto 拒绝。
+	require.Equal(t, "^[a-z]+$", gjson.GetBytes(capturedBody, "tools.0.function.parameters.properties.map.propertyNames.pattern").String())
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "response", gjson.GetBytes(rec.Body.Bytes(), "object").String())
+	require.Equal(t, "hello from responses bridge", gjson.GetBytes(rec.Body.Bytes(), "output.0.content.0.text").String())
+
+	require.Equal(t, 12, result.Usage.InputTokens)
+	require.Equal(t, 6, result.Usage.OutputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+}
+
+func TestForwardAsResponses_VertexThirdPartyMaaS_GCPAliasUsesAccountMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamResponse := `{"id":"chatcmpl-alias","object":"chat.completion","model":"deepseek-ai/deepseek-v4.1-flash-maas","choices":[{"index":0,"message":{"role":"assistant","content":"alias ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader([]byte(upstreamResponse))),
+		},
+	}
+
+	svc := &GeminiMessagesCompatService{
+		httpUpstream: httpStub,
+		cfg:          &config.Config{},
+	}
+
+	account := newGeminiVertexThirdPartyTestAccount("apikey", "gen-lang-client-0476190420")
+	account.Credentials["model_mapping"] = map[string]any{
+		"deepseek-v4.1-flash-gcp": "publishers/deepseek-ai/models/deepseek-v4.1-flash-maas",
+	}
+	reqBody := []byte(`{"model":"deepseek-v4.1-flash-gcp","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+
+	result, err := svc.ForwardAsResponses(context.Background(), c, account, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	capturedReq := httpStub.lastReq
+	require.NotNil(t, capturedReq)
+	require.Contains(t, capturedReq.URL.Path, "/endpoints/openapi/chat/completions")
+
+	capturedBody, _ := io.ReadAll(capturedReq.Body)
+	require.Equal(t, "deepseek-ai/deepseek-v4.1-flash-maas", gjson.GetBytes(capturedBody, "model").String())
+	require.Equal(t, "deepseek-v4.1-flash-gcp", result.Model)
+	require.Equal(t, "deepseek-ai/deepseek-v4.1-flash-maas", result.UpstreamModel)
+	require.Equal(t, "alias ok", gjson.GetBytes(rec.Body.Bytes(), "output.0.content.0.text").String())
+}
+
+func TestForwardAsResponses_VertexThirdPartyMaaS_Streaming(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamSSE := "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+		"data: [DONE]\n\n"
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+		},
+	}
+
+	svc := &GeminiMessagesCompatService{
+		httpUpstream: httpStub,
+		cfg:          &config.Config{},
+	}
+
+	account := newGeminiVertexThirdPartyTestAccount("apikey", "gen-lang-client-0476190420")
+	reqBody := []byte(`{"model":"deepseek-v4.1-flash-maas","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+
+	result, err := svc.ForwardAsResponses(context.Background(), c, account, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "event: response.output_text.delta")
+	require.Contains(t, rec.Body.String(), "hello")
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
+	require.Equal(t, 10, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
 func TestForwardAsChatCompletions_VertexThirdPartyMaaS_ReasoningEffortXHighMappedToMax(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
