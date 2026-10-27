@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // ForwardAsResponses serves OpenAI Responses clients (Codex and friends)
@@ -824,4 +825,83 @@ func (s *GeminiMessagesCompatService) writeGeminiResponsesMappedError(
 		errMsg = upstreamMsg
 	}
 	return writeResponsesCompatError(c, statusCode, errType, errMsg)
+}
+
+func (s *GeminiMessagesCompatService) reasoningContentByID(itemID string) string {
+	if s == nil || s.cache == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	content, err := s.cache.GetReasoningContent(ctx, itemID)
+	if err != nil {
+		return ""
+	}
+	return content
+}
+
+func (s *GeminiMessagesCompatService) setReasoningContent(itemID, content string) {
+	if s == nil || s.cache == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.cache.SetReasoningContent(ctx, itemID, content, responsesReasoningCacheTTL); err != nil {
+		logger.L().Warn("gemini responses vertex maas: cache reasoning content failed",
+			zap.Error(err),
+			zap.String("item_id", itemID),
+		)
+	}
+}
+
+func (s *GeminiMessagesCompatService) recacheReasoningItemsFromInput(inputRaw json.RawMessage) {
+	if s == nil || s.cache == nil {
+		return
+	}
+	inputRaw = bytes.TrimSpace(inputRaw)
+	if len(inputRaw) == 0 || inputRaw[0] != '[' {
+		return
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(inputRaw, &items); err != nil {
+		return
+	}
+	for _, raw := range items {
+		id, text, ok := apicompat.ExtractResponsesReasoningItem(raw)
+		if !ok || id == "" || text == "" {
+			continue
+		}
+		s.setReasoningContent(id, text)
+	}
+}
+
+func (s *GeminiMessagesCompatService) cacheReasoningItemsFromEvents(events []apicompat.ResponsesStreamEvent) {
+	for _, event := range events {
+		if event.Type != "response.output_item.done" || event.Item == nil {
+			continue
+		}
+		s.cacheReasoningItem(event.Item)
+	}
+}
+
+func (s *GeminiMessagesCompatService) cacheReasoningItemsFromOutput(output []apicompat.ResponsesOutput) {
+	for i := range output {
+		s.cacheReasoningItem(&output[i])
+	}
+}
+
+func (s *GeminiMessagesCompatService) cacheReasoningItem(item *apicompat.ResponsesOutput) {
+	if item == nil || item.Type != "reasoning" || item.ID == "" {
+		return
+	}
+	var parts []string
+	for _, sum := range item.Summary {
+		if t := strings.TrimSpace(sum.Text); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	s.setReasoningContent(item.ID, strings.Join(parts, "\n"))
 }

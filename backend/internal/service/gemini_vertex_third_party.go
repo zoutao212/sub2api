@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/gin-gonic/gin"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -549,7 +549,11 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 
 	clientStream := responsesReq.Stream
 
-	chatReq, err := apicompat.ResponsesToChatCompletionsRequest(&responsesReq)
+	s.recacheReasoningItemsFromInput(responsesReq.Input)
+
+	chatReq, err := apicompat.ResponsesToChatCompletionsRequestWithOptions(&responsesReq, &apicompat.ResponsesToChatOptions{
+		ReasoningContentByID: s.reasoningContentByID,
+	})
 	if err != nil {
 		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -738,7 +742,9 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 			return nil, fmt.Errorf("invalid tool call arguments from upstream: %w", err)
 		}
 
-		writeEvents(apicompat.FinalizeChatCompletionsResponsesStream(state))
+		finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
+		s.cacheReasoningItemsFromEvents(finalEvents)
+		writeEvents(finalEvents)
 		if !clientDisconnect {
 			if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
 				clientDisconnect = true
@@ -768,6 +774,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 		if responsesResp == nil {
 			return nil, writeResponsesCompatError(c, http.StatusBadGateway, "upstream_error", "Failed to convert response to Responses format")
 		}
+		s.cacheReasoningItemsFromOutput(responsesResp.Output)
 		writeResponsesJSON(c, s, resp, responsesResp, clientToolMapping)
 	}
 
