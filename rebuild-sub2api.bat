@@ -58,6 +58,7 @@ tasklist /FI "IMAGENAME eq sub2api.exe" 2>nul | findstr /I "sub2api.exe" >nul
 if not errorlevel 1 (
     echo        found - stopping it...
     taskkill /F /IM sub2api.exe >nul 2>&1
+    powershell -NoProfile -Command "Get-Process -Name sub2api* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>&1
     call :WaitStopped
     if errorlevel 1 (
         echo [FAIL] sub2api.exe is still running; the exe file is locked.

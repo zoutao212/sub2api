@@ -14,6 +14,7 @@ if errorlevel 1 (
 
 echo [Sub2API] 正在停止服务...
 taskkill /F /IM sub2api.exe >nul 2>&1
+powershell -NoProfile -Command "Get-Process -Name sub2api* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>&1
 
 rem ---- 确认已停止（最多轮询约 6 秒）----
 for /L %%i in (1,1,6) do (

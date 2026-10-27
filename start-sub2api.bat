@@ -37,12 +37,20 @@ if errorlevel 1 (
     net start Memurai
 )
 
-rem ---------- 2) 已在运行？直接打开浏览器 ----------
+rem ---------- 2) already running? probe health + exe freshness ----------
 tasklist /FI "IMAGENAME eq sub2api.exe" 2>nul | findstr /I "sub2api.exe" >nul
 if not errorlevel 1 (
-    echo [Sub2API] 服务已在运行，打开浏览器...
-    start "" "%URL%"
-    exit /b 0
+    echo [Sub2API] sub2api.exe found, checking health and build freshness...
+    call :ProbeRunning
+    if not errorlevel 1 (
+        echo [Sub2API] service healthy and up to date, opening browser...
+        start "" "%URL%"
+        exit /b 0
+    )
+    echo [Sub2API] process alive but unusable: health check failed, or the exe was rebuilt after it started.
+    echo [Sub2API] restarting so the current binary takes effect...
+    taskkill /F /IM sub2api.exe >nul 2>&1
+    call :WaitStopped
 )
 
 rem ---------- 3) 隐藏窗口启动 sub2api ----------
@@ -81,6 +89,30 @@ for /L %%i in (1,1,45) do (
 exit /b 1
 
 rem ---------- 工具函数：检测本机端口是否在监听 ----------
+rem ---------- helper: probe the already-running instance ----------
+rem exit 0 = healthy AND the running image matches the on-disk exe
+rem exit 1 = health check failed, or the exe is newer than the process start
+:ProbeRunning
+for /L %%i in (1,1,3) do (
+    curl -s -m 2 -o nul "%URL%/health" >nul 2>&1
+    if not errorlevel 1 goto :ProbeFreshness
+    ping -n 2 127.0.0.1 >nul
+)
+exit /b 1
+
+:ProbeFreshness
+powershell -NoProfile -Command "try{$p=Get-Process -Name sub2api -ErrorAction Stop;$f=Get-Item -LiteralPath '%~dp0backend\sub2api.exe' -ErrorAction Stop;if($f.LastWriteTime -gt $p.StartTime){exit 1}else{exit 0}}catch{exit 0}" >nul 2>&1
+exit /b %errorlevel%
+
+rem ---------- helper: wait until the old process is gone ----------
+:WaitStopped
+for /L %%i in (1,1,15) do (
+    ping -n 2 127.0.0.1 >nul
+    tasklist /FI "IMAGENAME eq sub2api.exe" 2>nul | findstr /I "sub2api.exe" >nul
+    if errorlevel 1 exit /b 0
+)
+exit /b 1
+
 :CheckPort
 netstat -ano | findstr ":%~1 " | findstr "LISTENING" >nul
 exit /b %errorlevel%
