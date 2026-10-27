@@ -1570,8 +1570,8 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 		value.Get("input_tokens_details.cached_tokens"),
 		value.Get("prompt_tokens_details.cached_tokens"),
 	} {
-		if nested.Exists() && nested.Int() > 0 {
-			return int(nested.Int())
+		if nested.Exists() {
+			return max(int(nested.Int()), 0)
 		}
 	}
 

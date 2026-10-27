@@ -45,6 +45,7 @@ func ChatCompletionsToResponsesWithMinOutputTokens(req *ChatCompletionsRequest, 
 		Include:            []string{"reasoning.encrypted_content"},
 		ServiceTier:        req.ServiceTier,
 		PromptCacheOptions: req.PromptCacheOptions,
+		PromptCacheKey:     req.PromptCacheKey,
 		ParallelToolCalls:  req.ParallelToolCalls,
 	}
 

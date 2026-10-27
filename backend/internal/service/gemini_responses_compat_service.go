@@ -76,9 +76,10 @@ func (s *GeminiMessagesCompatService) ForwardAsResponses(
 		mappedModel = account.GetMappedModel(originalModel)
 	}
 	// Vertex AI 上的第三方 MaaS 模型（如 DeepSeek）只提供 OpenAI 兼容端点，
-	// 不能按 Gemini generateContent 的 functionDeclarations 形状转发。
+	// 走原生的 ResponsesToChatCompletionsRequest 转换，不要使用 Anthropic 工具适配改写过的 body，
+	// 避免 map 序列化随机顺序击穿前缀缓存。
 	if account.IsVertexServiceAccount() && IsVertexThirdPartyMaaSModel(mappedModel) {
-		return s.forwardVertexThirdPartyResponses(ctx, c, account, adaptedBody, originalModel, mappedModel, clientToolMapping, startTime)
+		return s.forwardVertexThirdPartyResponses(ctx, c, account, body, originalModel, mappedModel, clientToolMapping, startTime)
 	}
 
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)

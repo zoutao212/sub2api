@@ -129,6 +129,25 @@ func TestResponsesToChatCompletionsRequest_InstructionsAndInputDeveloperRole(t *
 	assert.JSONEq(t, `"Hello"`, string(out.Messages[1].Content))
 }
 
+func TestResponsesToChatCompletionsRequest_PreservesPromptCacheFields(t *testing.T) {
+	req := &ResponsesRequest{
+		Model:              "deepseek-v4.1-flash-maas",
+		Input:              json.RawMessage(`"Continue"`),
+		PromptCacheKey:     "session-cache-key",
+		PromptCacheOptions: json.RawMessage(`{"mode":"auto"}`),
+	}
+
+	out, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &fields))
+	assert.JSONEq(t, `"session-cache-key"`, string(fields["prompt_cache_key"]))
+	assert.JSONEq(t, `{"mode":"auto"}`, string(fields["prompt_cache_options"]))
+}
+
 func TestResponsesInputToChatMessages_MidConversationDeveloperBecomesUser(t *testing.T) {
 	input := json.RawMessage(`[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},

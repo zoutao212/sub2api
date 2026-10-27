@@ -54,6 +54,60 @@ func TestUsageConversionsPreserveCacheWriteTokens(t *testing.T) {
 	require.Equal(t, 200, roundTrip.InputTokensDetails.CacheWriteTokens)
 }
 
+func TestChatUsageToResponsesUsage_DeepSeekPromptCacheHitTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     string
+		wantCached  int
+		wantDetails bool
+	}{
+		{
+			name:        "top-level DeepSeek hit count",
+			payload:     `{"prompt_tokens":1000,"completion_tokens":20,"prompt_cache_hit_tokens":900}`,
+			wantCached:  900,
+			wantDetails: true,
+		},
+		{
+			name:    "explicit nested zero takes precedence",
+			payload: `{"prompt_tokens":1000,"prompt_cache_hit_tokens":900,"prompt_tokens_details":{"cached_tokens":0}}`,
+		},
+		{
+			name:        "positive nested count takes precedence",
+			payload:     `{"prompt_tokens":1000,"prompt_cache_hit_tokens":900,"prompt_tokens_details":{"cached_tokens":500}}`,
+			wantCached:  500,
+			wantDetails: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var chatUsage ChatUsage
+			require.NoError(t, json.Unmarshal([]byte(tt.payload), &chatUsage))
+			responsesUsage := ChatUsageToResponsesUsage(&chatUsage)
+			if !tt.wantDetails {
+				require.Nil(t, responsesUsage.InputTokensDetails)
+				return
+			}
+			require.NotNil(t, responsesUsage.InputTokensDetails)
+			require.Equal(t, tt.wantCached, responsesUsage.InputTokensDetails.CachedTokens)
+		})
+	}
+}
+
+func TestChatCompletionsToResponses_PreservesPromptCacheFields(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model:              "deepseek-v4.1-flash-maas",
+		Messages:           []ChatMessage{{Role: "user", Content: json.RawMessage(`"Continue"`)}},
+		PromptCacheKey:     "session-cache-key",
+		PromptCacheOptions: json.RawMessage(`{"mode":"auto"}`),
+	}
+
+	responsesReq, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+	require.Equal(t, "session-cache-key", responsesReq.PromptCacheKey)
+	require.JSONEq(t, `{"mode":"auto"}`, string(responsesReq.PromptCacheOptions))
+}
+
 func TestResponsesUsageNestedCacheWritePresenceOverridesTopLevelAlias(t *testing.T) {
 	tests := []struct {
 		name       string

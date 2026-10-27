@@ -60,6 +60,8 @@ func ResponsesToChatCompletionsRequestWithOptions(req *ResponsesRequest, opts *R
 		TopP:                req.TopP,
 		Stream:              req.Stream,
 		ServiceTier:         req.ServiceTier,
+		PromptCacheOptions:  req.PromptCacheOptions,
+		PromptCacheKey:      req.PromptCacheKey,
 		ParallelToolCalls:   req.ParallelToolCalls,
 	}
 	if req.Reasoning != nil {
@@ -1543,18 +1545,27 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
 	}
-	if usage.PromptTokensDetails != nil && (usage.PromptTokensDetails.CachedTokens > 0 ||
-		usage.PromptTokensDetails.CacheCreationTokens > 0 || usage.PromptTokensDetails.CacheWriteTokens > 0) {
+	cachedTokens := usage.PromptCacheHitTokens
+	cacheCreationTokens := 0
+	cacheWriteTokens := 0
+	if details := usage.PromptTokensDetails; details != nil {
+		if usage.PromptTokensDetailsCachedTokensPresent || details.CachedTokens > 0 {
+			cachedTokens = details.CachedTokens
+		}
+		cacheCreationTokens = details.CacheCreationTokens
+		cacheWriteTokens = details.CacheWriteTokens
+	}
+	if cachedTokens > 0 || cacheCreationTokens > 0 || cacheWriteTokens > 0 {
 		out.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens:        usage.PromptTokensDetails.CachedTokens,
-			CacheCreationTokens: usage.PromptTokensDetails.CacheCreationTokens,
-			CacheWriteTokens:    usage.PromptTokensDetails.CacheWriteTokens,
+			CachedTokens:        cachedTokens,
+			CacheCreationTokens: cacheCreationTokens,
+			CacheWriteTokens:    cacheWriteTokens,
 		}
-		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheWriteTokens
-		} else {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheCreationTokens
-		}
+	}
+	if cacheWriteTokens > 0 {
+		out.CacheCreationInputTokens = cacheWriteTokens
+	} else {
+		out.CacheCreationInputTokens = cacheCreationTokens
 	}
 	return out
 }

@@ -20,8 +20,8 @@ func TestOpenAICacheReadTokensFromUsage_DeepSeekPromptCacheHit(t *testing.T) {
 	require.Equal(t, 800, openAICacheReadTokensFromUsage(gjson.Parse(
 		`{"prompt_tokens":1200,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":400}`,
 	)))
-	// A zero-valued compatibility field must not hide a positive DeepSeek hit count.
-	require.Equal(t, 800, openAICacheReadTokensFromUsage(gjson.Parse(
+	// An explicit zero from the standard nested field takes precedence over aliases.
+	require.Equal(t, 0, openAICacheReadTokensFromUsage(gjson.Parse(
 		`{"prompt_tokens":1200,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":800}`,
 	)))
 	// A positive official nested field remains authoritative.
@@ -95,7 +95,9 @@ func TestForwardAsResponses_VertexThirdPartyMaaS_DeepSeekCacheHitUsage(t *testin
 			svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
 			account := newGeminiVertexThirdPartyTestAccount("apikey", "gen-lang-client-0476190420")
 			reqBody, err := json.Marshal(map[string]any{
-				"model": "deepseek-v4.1-flash-maas",
+				"model":                "deepseek-v4.1-flash-maas",
+				"prompt_cache_key":     "session-cache-key",
+				"prompt_cache_options": map[string]any{"mode": "auto"},
 				"input": []any{map[string]any{
 					"type":    "message",
 					"role":    "user",
@@ -112,9 +114,18 @@ func TestForwardAsResponses_VertexThirdPartyMaaS_DeepSeekCacheHitUsage(t *testin
 			result, err := svc.ForwardAsResponses(context.Background(), c, account, reqBody)
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			upstreamBody, err := io.ReadAll(httpStub.lastReq.Body)
+			require.NoError(t, err)
+			require.Equal(t, "session-cache-key", gjson.GetBytes(upstreamBody, "prompt_cache_key").String())
+			require.Equal(t, "auto", gjson.GetBytes(upstreamBody, "prompt_cache_options.mode").String())
 			require.Equal(t, 1200, result.Usage.InputTokens)
 			require.Equal(t, 5, result.Usage.OutputTokens)
 			require.Equal(t, 900, result.Usage.CacheReadInputTokens)
+			if test.stream {
+				require.Contains(t, rec.Body.String(), `"cached_tokens":900`)
+			} else {
+				require.Equal(t, int64(900), gjson.GetBytes(rec.Body.Bytes(), "usage.input_tokens_details.cached_tokens").Int())
+			}
 		})
 	}
 }
