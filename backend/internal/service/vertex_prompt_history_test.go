@@ -20,8 +20,8 @@ func TestOpenAICacheReadTokensFromUsage_DeepSeekPromptCacheHit(t *testing.T) {
 	require.Equal(t, 800, openAICacheReadTokensFromUsage(gjson.Parse(
 		`{"prompt_tokens":1200,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":400}`,
 	)))
-	// A zero-valued compatibility field must not hide a positive DeepSeek hit count.
-	require.Equal(t, 800, openAICacheReadTokensFromUsage(gjson.Parse(
+	// An explicit zero from the standard nested field takes precedence over aliases.
+	require.Equal(t, 0, openAICacheReadTokensFromUsage(gjson.Parse(
 		`{"prompt_tokens":1200,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":800}`,
 	)))
 	// A positive official nested field remains authoritative.

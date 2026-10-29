@@ -94,7 +94,8 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 
 	var resp *http.Response
 	var requestIDHeader string
-	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+	maxAttempts := s.geminiMaxAttemptsPerAccount()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -115,7 +116,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
-			if attempt < geminiMaxRetries {
+			if attempt < maxAttempts {
 				sleepGeminiBackoff(attempt)
 				continue
 			}
@@ -346,7 +347,8 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 
 	var resp *http.Response
 	var requestIDHeader string
-	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+	maxAttempts := s.geminiMaxAttemptsPerAccount()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -367,7 +369,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
-			if attempt < geminiMaxRetries {
+			if attempt < maxAttempts {
 				sleepGeminiBackoff(attempt)
 				continue
 			}
@@ -662,7 +664,8 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 
 	var resp *http.Response
 	var requestIDHeader string
-	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+	maxAttempts := s.geminiMaxAttemptsPerAccount()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -683,7 +686,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
-			if attempt < geminiMaxRetries {
+			if attempt < maxAttempts {
 				sleepGeminiBackoff(attempt)
 				continue
 			}
@@ -924,7 +927,8 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 
 	var resp *http.Response
 	var requestIDHeader string
-	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+	maxAttempts := s.geminiMaxAttemptsPerAccount()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -945,7 +949,7 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
-			if attempt < geminiMaxRetries {
+			if attempt < maxAttempts {
 				sleepGeminiBackoff(attempt)
 				continue
 			}
