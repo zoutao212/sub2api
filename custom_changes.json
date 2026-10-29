@@ -8,12 +8,12 @@
     "main": "Pure mirror of upstream/main. Never carry local commits here - GitHub's Sync fork button stays available only while this holds.",
     "custom": "upstream main + all local work. This is the build and deploy branch."
   },
-  "upstream_base": "37067e8e3",
-  "last_sync": "2026-10-24",
-  "synced_version": "0.2.18",
+  "upstream_base": "a3298b46e",
+  "last_sync": "2026-10-29",
+  "synced_version": "0.2.19",
   "sync_command": "sync-upstream.bat (local-only, untracked)",
   "build_command": "rebuild-sub2api.bat (tracked) - vite build, then go build -tags embed, swap, restart",
-  "conflict_hotspot_warning": "0.2.18 (2026-10-24) touched none of the overlay files below - clean merge, no line-range shifts. Resolved in the 2026-10-22 sync: billing_service.go now conflicts by design (upstream ships its own gemini-4-argon card since 0.2.17 - keep their rates plus our CacheCreation entry and Contains note) and client.go conflicts on the fetchAvailableModels URL order (upstream tests patch the BaseURLs global, so the override must live in a new exported method, not in the shared wrapper). frontend/src/components/account/AccountUsageCell.vue remains upstream's most-churned file touching us.",
+  "conflict_hotspot_warning": "0.2.19 (2026-10-29) sync resolved: 1) Upstream refactored fixed geminiMaxRetries to configurable s.geminiMaxAttemptsPerAccount() - gemini_responses_compat_service.go and gemini_vertex_third_party.go adapted to dynamic calls. 2) Upstream added official prompt_cache_hit_tokens support in PR #8354; deduplicated redundant extraction while preserving nested cached_tokens authority. 3) Default model billing logic refined to only remap when account.ResolveMappedModel explicitly matches, keeping standard requests billed by requested model. All backend unit tests and frontend vue-tsc typechecks pass.",
   "overlay_changes": [
     {
       "id": "OVR-001",
