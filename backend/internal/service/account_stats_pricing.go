@@ -278,6 +278,7 @@ func applyAccountStatsCost(
 	if model == "" {
 		model = requestedModel
 	}
+	model = NormalizeVertexThirdPartyModelID(model)
 	requestCount := 1
 	if usageLog != nil && usageLog.ImageCount > 0 {
 		requestCount = usageLog.ImageCount

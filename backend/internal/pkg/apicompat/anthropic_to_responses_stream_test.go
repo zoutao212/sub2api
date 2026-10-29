@@ -454,3 +454,70 @@ func TestAnthropicEventToResponses_ToolCallArgumentsDoneMatchesDeltas(t *testing
 			done, streamed)
 	}
 }
+
+// TestAnthropicEventToResponses_ReasoningEmitsSummaryPart pins that a thinking
+// block emits response.reasoning_summary_part.added before the first delta,
+// and response.reasoning_summary_part.done upon stop.
+//
+// Why: strict accumulators (such as Codex/Qoder) initialize reasoning item
+// summary: [] on output_item.added, and only append a summary part upon seeing
+// response.reasoning_summary_part.added. Without it, reasoning_summary_text.delta
+// accesses item.summary[summary_index] which is undefined and crashes the stream.
+func TestAnthropicEventToResponses_ReasoningEmitsSummaryPart(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	state.Model = "claude-sonnet-4-6"
+
+	var types []string
+	var events []ResponsesStreamEvent
+	feed := func(evt *AnthropicStreamEvent) {
+		for _, out := range AnthropicEventToResponsesEvents(evt, state) {
+			types = append(types, out.Type)
+			events = append(events, out)
+		}
+	}
+
+	idx := 0
+	feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{ID: "msg_1", Model: "claude-sonnet-4-6"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &idx, ContentBlock: &AnthropicContentBlock{Type: "thinking"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &idx, Delta: &AnthropicDelta{Type: "thinking_delta", Thinking: "let me think"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &idx})
+	feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+	posOf := func(target string) int {
+		for i, ty := range types {
+			if ty == target {
+				return i
+			}
+		}
+		return -1
+	}
+
+	itemAdded := posOf("response.output_item.added")
+	partAdded := posOf("response.reasoning_summary_part.added")
+	firstDelta := posOf("response.reasoning_summary_text.delta")
+	textDone := posOf("response.reasoning_summary_text.done")
+	partDone := posOf("response.reasoning_summary_part.done")
+	itemDone := posOf("response.output_item.done")
+
+	if itemAdded < 0 {
+		t.Fatalf("response.output_item.added was not emitted; got %v", types)
+	}
+	if partAdded < 0 {
+		t.Fatalf("response.reasoning_summary_part.added was not emitted; got %v", types)
+	}
+	if firstDelta < 0 {
+		t.Fatalf("response.reasoning_summary_text.delta was not emitted; got %v", types)
+	}
+	if itemAdded > partAdded {
+		t.Errorf("output_item.added must precede reasoning_summary_part.added; got %v", types)
+	}
+	if partAdded > firstDelta {
+		t.Errorf("reasoning_summary_part.added must precede the first reasoning_summary_text.delta; got %v", types)
+	}
+	if textDone < 0 || partDone < 0 || itemDone < 0 {
+		t.Fatalf("missing completion events: textDone=%d partDone=%d itemDone=%d; got %v", textDone, partDone, itemDone, types)
+	}
+	if textDone > partDone || partDone > itemDone {
+		t.Errorf("completion event order must be text.done -> part.done -> item.done; got %v", types)
+	}
+}

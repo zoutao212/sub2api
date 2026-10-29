@@ -71,7 +71,48 @@ func TestHasResolvableTokenPricing(t *testing.T) {
 	require.False(t, svc.hasResolvableTokenPricing(ctx, "team/best", apiKey))
 	require.False(t, svc.hasResolvableTokenPricing(ctx, "", apiKey))
 
-	// billingService 缺失时 fail-closed（不误判有价）
+// billingService 缺失时 fail-closed（不误判有价）
 	empty := &GatewayService{}
 	require.False(t, empty.hasResolvableTokenPricing(ctx, "claude-sonnet-4", apiKey))
 }
+
+func TestRecordUsageBillingModel_AccountModelMappingResolution(t *testing.T) {
+	svc := &GatewayService{billingService: NewBillingService(&config.Config{}, nil)}
+	apiKey := &APIKey{}
+	ctx := context.Background()
+
+	account := &Account{
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gemini-3.8-flash-agy":     "gemini-3.8-flash",
+				"gemini-3.8-flash-high-agy": "gemini-3.8-flash-high",
+				"deepseek-v4.1-flash-gcp":  "publishers/deepseek-ai/models/deepseek-v4.1-flash-maas",
+			},
+		},
+	}
+
+	// 1. 请求内部路由别名 gemini-3.8-flash-agy，账号映射为 gemini-3.8-flash
+	res1 := &ForwardResult{
+		Model:         "gemini-3.8-flash-agy",
+		UpstreamModel: "gemini-3.8-flash",
+	}
+	model1 := svc.recordUsageBillingModel(ctx, apiKey, account, res1, ChannelUsageFields{})
+	require.Equal(t, "gemini-3.8-flash", model1)
+
+	// 2. 请求 deepseek-v4.1-flash-gcp，账号映射为 publishers/deepseek-ai/models/deepseek-v4.1-flash-maas
+	res2 := &ForwardResult{
+		Model:         "deepseek-v4.1-flash-gcp",
+		UpstreamModel: "publishers/deepseek-ai/models/deepseek-v4.1-flash-maas",
+	}
+	model2 := svc.recordUsageBillingModel(ctx, apiKey, account, res2, ChannelUsageFields{})
+	require.Equal(t, "publishers/deepseek-ai/models/deepseek-v4.1-flash-maas", model2)
+
+	// 3. 显式渠道请求模式 BillingModelSourceRequested 保持原始请求模型
+	model3 := svc.recordUsageBillingModel(ctx, apiKey, account, res1, ChannelUsageFields{
+		BillingModelSource: BillingModelSourceRequested,
+		OriginalModel:      "gemini-3.8-flash-agy",
+	})
+	require.Equal(t, "gemini-3.8-flash-agy", model3)
+}
+

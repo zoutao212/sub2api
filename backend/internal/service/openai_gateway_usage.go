@@ -213,18 +213,50 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
 
 	var cost *CostBreakdown
+	requestedModel := strings.TrimSpace(result.Model)
+	if input.OriginalModel != "" {
+		requestedModel = strings.TrimSpace(input.OriginalModel)
+	}
+	accountMappedModel := ""
+	if account != nil && requestedModel != "" {
+		if mapped, matched := account.ResolveMappedModel(requestedModel); matched && strings.TrimSpace(mapped) != "" {
+			accountMappedModel = strings.TrimSpace(mapped)
+		}
+	}
+	targetModel := firstNonEmpty(strings.TrimSpace(result.UpstreamModel), accountMappedModel)
+
 	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
 	if result.BillingModel != "" {
 		billingModel = strings.TrimSpace(result.BillingModel)
 	}
-	if input.BillingModelSource == BillingModelSourceChannelMapped && input.ChannelMappedModel != "" && input.ChannelMappedModel != input.OriginalModel {
-		billingModel = input.ChannelMappedModel
+	switch input.BillingModelSource {
+	case BillingModelSourceChannelMapped:
+		if input.ChannelMappedModel != "" && input.ChannelMappedModel != input.OriginalModel {
+			billingModel = input.ChannelMappedModel
+		}
+	case BillingModelSourceRequested:
+		if input.OriginalModel != "" {
+			billingModel = input.OriginalModel
+		}
+	case BillingModelSourceUpstream:
+		if targetModel != "" {
+			billingModel = targetModel
+		}
+	default:
+		// 默认模式下进行别名路由检查：
+		// 如果渠道未显式对请求别名配置渠道定价，且账号存在模型映射关系，优先采用映射后的真实模型。
+		hasExplicitChannelPrice := false
+		if requestedModel != "" && s.resolveOpenAIChannelPricing(ctx, requestedModel, apiKey) != nil {
+			hasExplicitChannelPrice = true
+		}
+		if !hasExplicitChannelPrice && targetModel != "" && !strings.EqualFold(requestedModel, targetModel) {
+			billingModel = targetModel
+		}
 	}
-	if input.BillingModelSource == BillingModelSourceRequested && input.OriginalModel != "" {
-		billingModel = input.OriginalModel
-	}
+
 	billingModels := usageBillingModelCandidates(
 		billingModel,
+		targetModel,
 		result.BillingModel,
 		input.ChannelMappedModel,
 		input.OriginalModel,
@@ -358,9 +390,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	// 确定 RequestedModel（渠道映射前的原始模型）
-	requestedModel := result.Model
 	if input.OriginalModel != "" {
 		requestedModel = input.OriginalModel
+	} else {
+		requestedModel = result.Model
 	}
 	sentModel := upstreamSentModel(result.Model, result.UpstreamModel)
 	if result.UpstreamResponseModelConflict {

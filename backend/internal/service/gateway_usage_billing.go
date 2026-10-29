@@ -796,7 +796,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, apiKey, user, input.PricingAt)
-	billingModel := s.recordUsageBillingModel(ctx, apiKey, result, input.ChannelUsageFields)
+	billingModel := s.recordUsageBillingModel(ctx, apiKey, account, result, input.ChannelUsageFields)
 	cacheStorageCost := s.cacheStorageCost(result, billingModel)
 
 	// 确定 RequestedModel（渠道映射前的原始模型）
@@ -925,16 +925,51 @@ func (s *GatewayService) recordUsageMultipliers(ctx context.Context, apiKey *API
 	return multiplier, imageMultiplier, pricingAt
 }
 
-// recordUsageBillingModel 按计费模型来源、composite 规则与无价兜底确定计费模型。
-func (s *GatewayService) recordUsageBillingModel(ctx context.Context, apiKey *APIKey, result *ForwardResult, fields ChannelUsageFields) string {
+// recordUsageBillingModel 按计费模型来源、账号模型映射、composite 规则与无价兜底确定计费模型。
+func (s *GatewayService) recordUsageBillingModel(ctx context.Context, apiKey *APIKey, account *Account, result *ForwardResult, fields ChannelUsageFields) string {
+	requestedModel := strings.TrimSpace(result.Model)
+	if fields.OriginalModel != "" {
+		requestedModel = strings.TrimSpace(fields.OriginalModel)
+	}
+
+	upstreamModel := strings.TrimSpace(result.UpstreamModel)
+	accountMappedModel := ""
+	if account != nil && requestedModel != "" {
+		if mapped, matched := account.ResolveMappedModel(requestedModel); matched && strings.TrimSpace(mapped) != "" {
+			accountMappedModel = strings.TrimSpace(mapped)
+		}
+	}
+	targetModel := firstNonEmpty(upstreamModel, accountMappedModel)
+
 	concreteBillingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
 	billingModel := concreteBillingModel
-	if fields.BillingModelSource == BillingModelSourceChannelMapped && fields.ChannelMappedModel != "" {
-		billingModel = fields.ChannelMappedModel
+
+	switch fields.BillingModelSource {
+	case BillingModelSourceChannelMapped:
+		if fields.ChannelMappedModel != "" {
+			billingModel = fields.ChannelMappedModel
+		}
+	case BillingModelSourceRequested:
+		if requestedModel != "" {
+			billingModel = requestedModel
+		}
+	case BillingModelSourceUpstream:
+		if targetModel != "" {
+			billingModel = targetModel
+		}
+	default:
+		// 默认模式下进行别名路由检查：
+		// 如果渠道未显式对请求别名配置渠道定价，且账号存在模型映射关系，
+		// 计费模型应优先采用映射后的真实目标模型，防止内部路由别名直接查价失配。
+		hasExplicitChannelPrice := false
+		if requestedModel != "" && s.resolveChannelPricing(ctx, requestedModel, apiKey) != nil {
+			hasExplicitChannelPrice = true
+		}
+		if !hasExplicitChannelPrice && targetModel != "" && !strings.EqualFold(requestedModel, targetModel) {
+			billingModel = targetModel
+		}
 	}
-	if fields.BillingModelSource == BillingModelSourceRequested && fields.OriginalModel != "" {
-		billingModel = fields.OriginalModel
-	}
+
 	// composite 分组的公开别名（如 all/claude）会经 OriginalModel/ChannelMappedModel
 	// 进入上面的来源覆盖：任意别名查无价会静默落 $0，含家族词的别名则被价格表的
 	// 家族模糊匹配错计（如 Opus 流量按 Sonnet 兜底价）。除非管理员为别名显式配置了
@@ -944,7 +979,7 @@ func (s *GatewayService) recordUsageBillingModel(ctx context.Context, apiKey *AP
 	}
 	// 通用兜底（与 OpenAI 路径的 usageBillingModelCandidates 语义对齐）：
 	// 选定模型查不到任何价格时回退到实际转发的具体模型。已定价流量不受影响。
-	return s.billableModelWithFallback(ctx, apiKey, billingModel, result.UpstreamModel, result.Model)
+	return s.billableModelWithFallback(ctx, apiKey, billingModel, targetModel, result.UpstreamModel, result.Model)
 }
 
 // cacheStoragePrice 返回计费模型的显式缓存存储单价；计费模型未配置时依次回退到实际转发模型与请求模型。
@@ -981,7 +1016,8 @@ func isCacheStorageOnlyResult(result *ForwardResult) bool {
 
 // CacheStoragePriced 判断 RecordUsage 对 input.Result 采用的计费模型（含回退候选）是否配置了显式缓存存储单价。
 func (s *GatewayService) CacheStoragePriced(ctx context.Context, input *RecordUsageInput) bool {
-	billingModel := s.recordUsageBillingModel(ctx, input.APIKey, input.Result, input.ChannelUsageFields)
+	account := input.Account
+	billingModel := s.recordUsageBillingModel(ctx, input.APIKey, account, input.Result, input.ChannelUsageFields)
 	return s.cacheStoragePrice(input.Result, billingModel) > 0
 }
 
@@ -991,8 +1027,9 @@ func (s *GatewayService) QuoteUsageCost(ctx context.Context, input *RecordUsageI
 	if user == nil {
 		user = input.APIKey.User
 	}
+	account := input.Account
 	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, input.APIKey, user, input.PricingAt)
-	billingModel := s.recordUsageBillingModel(ctx, input.APIKey, input.Result, input.ChannelUsageFields)
+	billingModel := s.recordUsageBillingModel(ctx, input.APIKey, account, input.Result, input.ChannelUsageFields)
 	cost := s.calculateRecordUsageCost(ctx, input.Result, input.APIKey, billingModel, multiplier, imageMultiplier, pricingAt)
 	if cost == nil {
 		return 0

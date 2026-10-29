@@ -739,6 +739,8 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken: deepseekFlashOffPeakCacheRead,   // $0.003 per MTok (cache hit)
 		SupportsCacheBreakdown: false,
 	}
+	s.fallbackPrices["deepseek-v4.1-pro"] = s.fallbackPrices["deepseek-v4-pro"]
+	s.fallbackPrices["deepseek-v4.1-flash"] = s.fallbackPrices["deepseek-v4-flash"]
 	s.fallbackPrices["deepseek-v4-flash-vision-exp"] = &ModelPricing{
 		InputPricePerToken:     deepseekFlashOffPeakInputPrice,
 		OutputPricePerToken:    deepseekFlashOffPeakOutputPrice,
@@ -1145,11 +1147,17 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// 统一按 flash 价兜底，避免计费中断。新名字由 fallback warn 日志
 	// （每模型每进程一条）暴露，运营者据此更新价卡。
 	// "deepseek-v4-flash-vision-exp" 含 "deepseek-v4-flash" 子串，显式分支置于 flash 之前，语义清晰。
-	if strings.Contains(modelLower, "deepseek-v4-flash-vision-exp") {
+	if strings.Contains(modelLower, "deepseek-v4-flash-vision-exp") || strings.Contains(modelLower, "deepseek-v4.1-flash-vision-exp") {
 		return s.fallbackPrices["deepseek-v4-flash-vision-exp"]
+	}
+	if strings.Contains(modelLower, "deepseek-v4.1-flash") {
+		return s.fallbackPrices["deepseek-v4.1-flash"]
 	}
 	if strings.Contains(modelLower, "deepseek-v4-flash") {
 		return s.fallbackPrices["deepseek-v4-flash"]
+	}
+	if strings.Contains(modelLower, "deepseek-v4.1-pro") {
+		return s.fallbackPrices["deepseek-v4.1-pro"]
 	}
 	if strings.Contains(modelLower, "deepseek-v4-pro") {
 		return s.fallbackPrices["deepseek-v4-pro"]

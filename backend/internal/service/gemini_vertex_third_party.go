@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -63,6 +64,14 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 	if clientStream {
 		if uBody, err := ensureOpenAIChatStreamUsage(upstreamBody); err == nil {
 			upstreamBody = uBody
+		}
+	}
+	if !gjson.GetBytes(upstreamBody, "prompt_cache_key").Exists() {
+		key := ExtractClientSessionID(c)
+		if key != "" {
+			if next, err := sjson.SetBytes(upstreamBody, "prompt_cache_key", key); err == nil {
+				upstreamBody = next
+			}
 		}
 	}
 
@@ -434,6 +443,12 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 				usage.InputTokens = chunkUsage.InputTokens
 				usage.OutputTokens = chunkUsage.OutputTokens
 				usage.CacheReadInputTokens = chunkUsage.CacheReadInputTokens
+				if rawUsageNode := gjson.GetBytes([]byte(trimmed), "usage"); rawUsageNode.Exists() {
+					logger.L().Info("vertex third-party raw upstream usage",
+						zap.String("raw_usage", rawUsageNode.Raw),
+						zap.Int("parsed_cache_read_tokens", chunkUsage.CacheReadInputTokens),
+					)
+				}
 			}
 
 			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != nil && *chunk.Choices[0].Delta.Content != "" {
@@ -549,10 +564,25 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 
 	clientStream := responsesReq.Stream
 
+	reasoningItems, plaintextReasoningItems := vertexResponsesReasoningInputStats(responsesReq.Input)
+	reasoningCacheLookups := 0
+	reasoningCacheHits := 0
+	reasoningCacheMisses := 0
+	reasoningContentByID := func(itemID string) string {
+		reasoningCacheLookups++
+		content := s.reasoningContentByID(itemID)
+		if content == "" {
+			reasoningCacheMisses++
+		} else {
+			reasoningCacheHits++
+		}
+		return content
+	}
+
 	s.recacheReasoningItemsFromInput(responsesReq.Input)
 
 	chatReq, err := apicompat.ResponsesToChatCompletionsRequestWithOptions(&responsesReq, &apicompat.ResponsesToChatOptions{
-		ReasoningContentByID: s.reasoningContentByID,
+		ReasoningContentByID: reasoningContentByID,
 	})
 	if err != nil {
 		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -563,6 +593,13 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 	if clientStream {
 		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}
+	if strings.TrimSpace(chatReq.PromptCacheKey) == "" {
+		if sessionID := ExtractClientSessionID(c); sessionID != "" {
+			chatReq.PromptCacheKey = sessionID
+		} else {
+			chatReq.PromptCacheKey = deriveCompatPromptCacheKey(chatReq, upstreamModel)
+		}
+	}
 
 	chatBody, err := json.Marshal(chatReq)
 	if err != nil {
@@ -571,6 +608,26 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 	if normBody, changed := NormalizeVertexOpenAIReasoningEffort(chatBody); changed {
 		chatBody = normBody
 	}
+	outgoingReasoningMessages := 0
+	outgoingReasoningBytes := 0
+	for _, message := range chatReq.Messages {
+		if message.ReasoningContent != "" {
+			outgoingReasoningMessages++
+			outgoingReasoningBytes += len(message.ReasoningContent)
+		}
+	}
+	logger.L().Info("vertex third-party responses reasoning reconstruction",
+		zap.Int64("account_id", account.ID),
+		zap.String("model", upstreamModel),
+		zap.String("prompt_cache_key", chatReq.PromptCacheKey),
+		zap.Int("input_reasoning_items", reasoningItems),
+		zap.Int("input_plaintext_reasoning_items", plaintextReasoningItems),
+		zap.Int("reasoning_cache_lookups", reasoningCacheLookups),
+		zap.Int("reasoning_cache_hits", reasoningCacheHits),
+		zap.Int("reasoning_cache_misses", reasoningCacheMisses),
+		zap.Int("outgoing_reasoning_messages", outgoingReasoningMessages),
+		zap.Int("outgoing_reasoning_bytes", outgoingReasoningBytes),
+	)
 	logVertexPromptHistoryDriftForChatBody(c, account, "responses_maas", upstreamModel, chatBody)
 
 	projectID := account.VertexProjectID()
@@ -727,13 +784,21 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 				usage.InputTokens = chunkUsage.InputTokens
 				usage.OutputTokens = chunkUsage.OutputTokens
 				usage.CacheReadInputTokens = chunkUsage.CacheReadInputTokens
+				logger.L().Info("vertex third-party responses stream usage",
+					zap.String("chunk", trimmed),
+					zap.Int("input_tokens", usage.InputTokens),
+					zap.Int("output_tokens", usage.OutputTokens),
+					zap.Int("cache_read_tokens", usage.CacheReadInputTokens),
+				)
 			}
 			if firstTokenMs == nil && chatChunkStartsResponsesOutput(&chunk) {
 				elapsed := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &elapsed
 			}
 
-			writeEvents(apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state))
+			events := apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state)
+			s.cacheReasoningItemsFromEvents(events)
+			writeEvents(events)
 		}
 		if scanErr := scanner.Err(); scanErr != nil {
 			return nil, fmt.Errorf("vertex third_party responses stream read error: %w", scanErr)
@@ -1018,3 +1083,26 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 		ClientDisconnect: clientDisconnect,
 	}, nil
 }
+
+func vertexResponsesReasoningInputStats(inputRaw json.RawMessage) (total int, plaintext int) {
+	inputRaw = bytes.TrimSpace(inputRaw)
+	if len(inputRaw) == 0 || inputRaw[0] != '[' {
+		return 0, 0
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(inputRaw, &items); err != nil {
+		return 0, 0
+	}
+	for _, raw := range items {
+		_, text, ok := apicompat.ExtractResponsesReasoningItem(raw)
+		if !ok {
+			continue
+		}
+		total++
+		if text != "" {
+			plaintext++
+		}
+	}
+	return total, plaintext
+}
+

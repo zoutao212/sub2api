@@ -337,9 +337,20 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
 			Item: &ResponsesOutput{
-				Type: "reasoning",
-				ID:   state.CurrentItemID,
+				Type:   "reasoning",
+				ID:     state.CurrentItemID,
+				Status: "in_progress",
 			},
+		}))
+		// response.reasoning_summary_part.added must precede the reasoning_summary_text.delta
+		// events for that part. The reasoning item is added with summary: [], and strict
+		// streaming accumulators (such as Codex/Qoder) only append a summary part when they
+		// see reasoning_summary_part.added, failing with IndexError if a delta arrives first.
+		events = append(events, makeResponsesEvent(state, "response.reasoning_summary_part.added", &ResponsesStreamEvent{
+			OutputIndex:  state.OutputIndex,
+			SummaryIndex: 0,
+			ItemID:       state.CurrentItemID,
+			Part:         &ResponsesContentPart{Type: "summary_text", Text: ""},
 		}))
 
 	case "text":
@@ -471,12 +482,19 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	switch state.CurrentItemType {
 	case "reasoning":
-		// Emit reasoning summary done + output item done
+		// Emit reasoning summary text done + reasoning summary part done + output item done
 		events := []ResponsesStreamEvent{
 			makeResponsesEvent(state, "response.reasoning_summary_text.done", &ResponsesStreamEvent{
 				OutputIndex:  state.OutputIndex,
 				SummaryIndex: 0,
+				Text:         state.CurrentSummary,
 				ItemID:       state.CurrentItemID,
+			}),
+			makeResponsesEvent(state, "response.reasoning_summary_part.done", &ResponsesStreamEvent{
+				OutputIndex:  state.OutputIndex,
+				SummaryIndex: 0,
+				ItemID:       state.CurrentItemID,
+				Part:         &ResponsesContentPart{Type: "summary_text", Text: state.CurrentSummary},
 			}),
 		}
 		events = append(events, closeCurrentResponsesItem(state)...)
