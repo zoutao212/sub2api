@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,7 +83,7 @@ func (f *AntigravityQuotaFetcher) FetchQuota(ctx context.Context, account *Accou
 	}
 
 	// 调用 retrieveUserQuotaSummary 获取 5h / Weekly 配额桶（非关键路径，失败不影响主流程）
-	summaryResp, summaryRaw, err := client.RetrieveUserQuotaSummary(ctx, accessToken, projectID, resolveModelsListReadLimit(f.cfg))
+	summaryResp, summaryRaw, err := client.RetrieveUserQuotaSummaryWithRaw(ctx, accessToken, projectID, resolveModelsListReadLimit(f.cfg))
 	if err != nil {
 		slog.Warn("failed to retrieve user quota summary", "error", err)
 	}
@@ -96,6 +97,11 @@ func (f *AntigravityQuotaFetcher) FetchQuota(ctx context.Context, account *Accou
 	if summaryRaw != nil && modelsRaw != nil {
 		modelsRaw["quota_summary"] = summaryRaw
 	}
+
+	// The per-group 5-hour and weekly windows. Not on the critical path: without them the
+	// per-model figures above are shown as before. Reuses the summary fetched above so the
+	// endpoint is hit once per quota refresh.
+	usageInfo.AntigravityQuotaGroups = buildAntigravityQuotaGroups(summaryResp)
 
 	return &QuotaResult{
 		UsageInfo: usageInfo,
@@ -141,7 +147,7 @@ func normalizeTier(raw string) string {
 // buildUsageInfo 将 API 响应转换为 UsageInfo。
 func (f *AntigravityQuotaFetcher) buildUsageInfo(
 	modelsResp *antigravity.FetchAvailableModelsResponse,
-	summaryResp *antigravity.RetrieveUserQuotaSummaryResponse,
+	summaryResp *antigravity.QuotaSummaryResponse,
 	tierRaw, tierNormalized string,
 	loadResp *antigravity.LoadCodeAssistResponse,
 ) *UsageInfo {
@@ -285,6 +291,53 @@ func (f *AntigravityQuotaFetcher) buildUsageInfo(
 	}
 
 	return info
+}
+
+// buildAntigravityQuotaGroups turns a quota summary into display groups, each with its
+// windows ordered 5h then weekly. Returns nil when there is nothing to show.
+func buildAntigravityQuotaGroups(summary *antigravity.QuotaSummaryResponse) []*AntigravityQuotaGroup {
+	if summary == nil {
+		return nil
+	}
+	windowOrder := map[string]int{"5h": 0, "weekly": 1}
+	var groups []*AntigravityQuotaGroup
+	for _, group := range summary.Groups {
+		if len(group.Buckets) == 0 {
+			continue
+		}
+		out := &AntigravityQuotaGroup{Name: group.DisplayName, Description: group.Description}
+		for _, bucket := range group.Buckets {
+			if out.Key == "" {
+				if i := strings.LastIndex(bucket.BucketID, "-"); i > 0 {
+					out.Key = bucket.BucketID[:i]
+				}
+			}
+			used := (1.0 - bucket.RemainingFraction) * 100
+			if used < 0 {
+				used = 0
+			}
+			window := &AntigravityQuotaWindow{Window: bucket.Window, Utilization: used}
+			if bucket.ResetTime != "" {
+				if resetAt, err := time.Parse(time.RFC3339, bucket.ResetTime); err == nil {
+					window.ResetsAt = &resetAt
+				}
+			}
+			out.Windows = append(out.Windows, window)
+		}
+		sort.SliceStable(out.Windows, func(i, j int) bool {
+			oi, iok := windowOrder[out.Windows[i].Window]
+			oj, jok := windowOrder[out.Windows[j].Window]
+			if !iok {
+				oi = len(windowOrder)
+			}
+			if !jok {
+				oj = len(windowOrder)
+			}
+			return oi < oj
+		})
+		groups = append(groups, out)
+	}
+	return groups
 }
 
 // GetProxyURL 获取账户的代理 URL

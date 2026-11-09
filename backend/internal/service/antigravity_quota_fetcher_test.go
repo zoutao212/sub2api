@@ -397,11 +397,11 @@ func TestBuildUsageInfo_AICredits(t *testing.T) {
 
 func TestBuildUsageInfo_WithQuotaSummary(t *testing.T) {
 	fetcher := &AntigravityQuotaFetcher{}
-	summaryResp := &antigravity.RetrieveUserQuotaSummaryResponse{
-		Groups: []antigravity.QuotaGroup{
+	summaryResp := &antigravity.QuotaSummaryResponse{
+		Groups: []antigravity.QuotaSummaryGroup{
 			{
 				DisplayName: "Gemini Models",
-				Buckets: []antigravity.QuotaBucket{
+				Buckets: []antigravity.QuotaSummaryBucket{
 					{
 						BucketID:          "gemini-5h",
 						DisplayName:       "Five Hour Limit Remaining",
@@ -418,7 +418,7 @@ func TestBuildUsageInfo_WithQuotaSummary(t *testing.T) {
 			},
 			{
 				DisplayName: "Claude and GPT models",
-				Buckets: []antigravity.QuotaBucket{
+				Buckets: []antigravity.QuotaSummaryBucket{
 					{
 						BucketID:          "3p-5h",
 						DisplayName:       "Five Hour Limit Remaining",

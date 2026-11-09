@@ -681,35 +681,10 @@ type FetchAvailableModelsResponse struct {
 	DeprecatedModelIDs map[string]DeprecatedModelInfo `json:"deprecatedModelIds,omitempty"`
 }
 
-// RetrieveUserQuotaSummaryRequest 请求体
-type RetrieveUserQuotaSummaryRequest struct {
-	Project string `json:"project,omitempty"`
-}
-
-// QuotaBucket 单个额度桶
-type QuotaBucket struct {
-	BucketID          string  `json:"bucketId"`
-	DisplayName       string  `json:"displayName,omitempty"`
-	Window            string  `json:"window,omitempty"`
-	ResetTime         string  `json:"resetTime,omitempty"`
-	RemainingFraction float64 `json:"remainingFraction"`
-}
-
-// QuotaGroup 额度分组
-type QuotaGroup struct {
-	DisplayName string        `json:"displayName,omitempty"`
-	Description string        `json:"description,omitempty"`
-	Buckets     []QuotaBucket `json:"buckets"`
-}
-
-// RetrieveUserQuotaSummaryResponse 响应结构
-type RetrieveUserQuotaSummaryResponse struct {
-	Groups      []QuotaGroup `json:"groups"`
-	Description string       `json:"description,omitempty"`
-}
-
-// RetrieveUserQuotaSummary 获取用户配额汇总（5h与每周限制桶）
-func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, projectID string, bodyLimit int64) (*RetrieveUserQuotaSummaryResponse, map[string]any, error) {
+// RetrieveUserQuotaSummaryWithRaw 获取用户配额汇总（5h与每周限制桶），同时返回原始 JSON。
+// 与上游 RetrieveUserQuotaSummary 的区别：配额查询走 daily -> prod（QuotaBaseURLs，
+// 与官方 IDE 及实际消费记账端点一致），且 body 上限可配置。
+func (c *Client) RetrieveUserQuotaSummaryWithRaw(ctx context.Context, accessToken, projectID string, bodyLimit int64) (*QuotaSummaryResponse, map[string]any, error) {
 	if c == nil || c.httpClient == nil {
 		return nil, nil, errors.New("antigravity client is not configured")
 	}
@@ -717,7 +692,7 @@ func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, proj
 		return nil, nil, errors.New("retrieveUserQuotaSummary body limit must be positive")
 	}
 
-	reqBody := RetrieveUserQuotaSummaryRequest{Project: projectID}
+	reqBody := FetchAvailableModelsRequest{Project: projectID}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, nil, fmt.Errorf("序列化请求失败: %w", err)
@@ -763,7 +738,7 @@ func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, proj
 			return nil, nil, fmt.Errorf("retrieveUserQuotaSummary 失败 (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
 		}
 
-		var summaryResp RetrieveUserQuotaSummaryResponse
+		var summaryResp QuotaSummaryResponse
 		if err := json.Unmarshal(respBodyBytes, &summaryResp); err != nil {
 			return nil, nil, fmt.Errorf("响应解析失败: %w", err)
 		}

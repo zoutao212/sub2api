@@ -12,7 +12,7 @@ func geminiContentsFromClaudeRequest(t *testing.T, messages []any) []any {
 	body, err := json.Marshal(map[string]any{"messages": messages})
 	require.NoError(t, err)
 
-	converted, err := convertClaudeMessagesToGeminiGenerateContent(body)
+	converted, err := convertClaudeMessagesToGeminiGenerateContent(body, "gemini-2.5-pro")
 	require.NoError(t, err)
 
 	var geminiReq map[string]any

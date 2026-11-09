@@ -8,12 +8,12 @@
     "main": "Pure mirror of upstream/main. Never carry local commits here - GitHub's Sync fork button stays available only while this holds.",
     "custom": "upstream main + all local work. This is the build and deploy branch."
   },
-  "upstream_base": "a3298b46e",
-  "last_sync": "2026-10-29",
-  "synced_version": "0.2.19",
+  "upstream_base": "6b4b37db4",
+  "last_sync": "2026-11-09",
+  "synced_version": "0.2.20",
   "sync_command": "sync-upstream.bat (local-only, untracked)",
   "build_command": "rebuild-sub2api.bat (tracked) - vite build, then go build -tags embed, swap, restart",
-  "conflict_hotspot_warning": "0.2.19 (2026-10-29) sync resolved: 1) Upstream refactored fixed geminiMaxRetries to configurable s.geminiMaxAttemptsPerAccount() - gemini_responses_compat_service.go and gemini_vertex_third_party.go adapted to dynamic calls. 2) Upstream added official prompt_cache_hit_tokens support in PR #8354; deduplicated redundant extraction while preserving nested cached_tokens authority. 3) Default model billing logic refined to only remap when account.ResolveMappedModel explicitly matches, keeping standard requests billed by requested model. All backend unit tests and frontend vue-tsc typechecks pass.",
+  "conflict_hotspot_warning": "0.2.20 (2026-11-09) sync resolved: 1) Three explicit conflicts - gemini_messages_compat_service.go (kept our Vertex third-party MaaS branch + adopted upstream convertClaudeMessagesToGeminiGenerateContent(body, mappedModel) 2-arg call), en/zh admin/accounts.ts (kept BOTH our gemini5h/weekly/claude5h/weekly keys and upstream antigravityGemini/Argon/Other 5h/weekly keys; upstream native quota-group bars now render first, our bucket display is the fallback). 2) Semantic conflict git did not flag: upstream added RetrieveUserQuotaSummary in new quota_summary.go colliding with our same-named method on *Client - renamed ours to RetrieveUserQuotaSummaryWithRaw, switched to upstream QuotaSummaryResponse types, single fetch feeds both display paths. 3) Local-only gemini_responses_compat_service.go adapted to upstream refactors: collectGeminiSSE(cfg,...), geminiTextDelta struct replacing computeGeminiTextDelta, 2-arg converter; gemini_trailing_turns_test.go passes gemini-2.5-pro (the non-multimodal sibling-part shape mirrors the 0.2.19 baseline fixture; a gemini-3+ model would nest tool media inside functionResponse.parts and change the part count). Backend build + plain service/apicompat/antigravity/handler packages + frontend vue-tsc + AccountUsageCell vitest all pass. The -tags=unit suite has two pre-existing upstream flaky tests unrelated to this merge (files byte-identical to origin/main): TestOllamaProbeCallback_StaleLongDoesNotOverrideNewShort (CAS timing race, ~1/5 pass) and TestCommandCodeGatewayPassesThroughCatalogProtocols (passes in isolation, test-ordering sensitive).",
   "overlay_changes": [
     {
       "id": "OVR-001",
@@ -23,14 +23,39 @@
       "deleted_by_us": true
     },
     {
-      "id": "OVR-002",
-      "file": "backend/internal/pkg/antigravity/client.go",
+      "id": "OVR-017",
+      "file": "backend/internal/handler/endpoint.go",
       "added_line_ranges_vs_upstream_main": [
-        "684-787"
+        "334-337"
       ],
       "hunk_count": 1,
       "deleted_by_us": false,
-      "note": "Quota-summary block (types + RetrieveUserQuotaSummary + FetchAvailableModelsQuota). 2026-10-22 sync (0.2.17) reshaped this file: upstream split FetchAvailableModels into a thin wrapper over a private fetchAvailableModels and added FetchAvailableModelsFromURL. Our old in-body URL override (daily->prod) had to be dropped - upstream tests patch the BaseURLs global, so overriding inside the wrapper breaks them. The quota order now lives in the new exported FetchAvailableModelsQuota, called from antigravity_quota_fetcher.go (only production caller). If this hunk conflicts again, keep BOTH: upstream's structure and our method."
+      "note": "Vertex third-party MaaS: Gemini platform also reads the OpenAI-compatible endpoint context (GetActualOpenAIUpstreamEndpoint); the forward layer writes the real Vertex OpenAI endpoint into the same key."
+    },
+    {
+      "id": "OVR-014",
+      "file": "backend/internal/handler/gateway_handler_responses.go",
+      "added_line_ranges_vs_upstream_main": [
+        "186-190",
+        "194-196",
+        "202",
+        "282",
+        "288-298",
+        "307-316"
+      ],
+      "hunk_count": 6,
+      "deleted_by_us": false,
+      "note": "Gemini branch for /v1/responses: group platform detection, gemini: session prefix, maxAccountSwitchesGemini, non-Gemini account skip, geminiCompatService.ForwardAsResponses dispatch. See docs/GEMINI_RESPONSES_COMPAT.md."
+    },
+    {
+      "id": "OVR-002",
+      "file": "backend/internal/pkg/antigravity/client.go",
+      "added_line_ranges_vs_upstream_main": [
+        "684-762"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "Quota-summary block (types + RetrieveUserQuotaSummary + FetchAvailableModelsQuota). 2026-10-22 sync (0.2.17) reshaped this file: upstream split FetchAvailableModels into a thin wrapper over a private fetchAvailableModels and added FetchAvailableModelsFromURL. Our old in-body URL override (daily->prod) had to be dropped - upstream tests patch the BaseURLs global, so overriding inside the wrapper breaks them. The quota order now lives in the new exported FetchAvailableModelsQuota, called from antigravity_quota_fetcher.go (only production caller). If this hunk conflicts again, keep BOTH: upstream's structure and our method. 2026-11-09 sync (0.2.20): upstream shipped its own RetrieveUserQuotaSummary in quota_summary.go (same endpoint/JSON). To avoid a duplicate method on *Client, our method was renamed RetrieveUserQuotaSummaryWithRaw and now returns upstream types (QuotaSummaryResponse); our old QuotaBucket/QuotaGroup/RetrieveUserQuotaSummaryResponse types were deleted. Keeps daily->prod QuotaBaseURLs order, configurable body limit and raw map. The fetcher hits the endpoint once and feeds both buildUsageInfo and upstream buildAntigravityQuotaGroups."
     },
     {
       "id": "OVR-003",
@@ -40,6 +65,84 @@
       ],
       "hunk_count": 1,
       "deleted_by_us": false
+    },
+    {
+      "id": "OVR-018",
+      "file": "backend/internal/pkg/apicompat/anthropic_to_responses_response.go",
+      "added_line_ranges_vs_upstream_main": [
+        "346-348",
+        "351-360",
+        "492",
+        "495-500",
+        "504"
+      ],
+      "hunk_count": 5,
+      "deleted_by_us": false,
+      "note": "Emits response.reasoning_summary_part.added/done and Status in_progress for strict streaming clients (Codex/Qoder) so a delta never arrives before its part. 2026-11-09 sync: upstream added strings.Builder buffers (appendStreamString); our done events read CurrentSummary before closeCurrentResponsesItem resets it - order safe."
+    },
+    {
+      "id": "OVR-019",
+      "file": "backend/internal/pkg/apicompat/anthropic_to_responses_stream_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "457-523"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "Tests for the reasoning_summary_part event sequence."
+    },
+    {
+      "id": "OVR-020",
+      "file": "backend/internal/pkg/apicompat/chatcompletions_responses_bridge.go",
+      "added_line_ranges_vs_upstream_main": [
+        "63-64",
+        "1549-1554",
+        "1556-1563",
+        "1566-1570"
+      ],
+      "hunk_count": 4,
+      "deleted_by_us": false,
+      "note": "PromptCacheOptions/PromptCacheKey passthrough; ChatUsageToResponsesUsage rewritten for DeepSeek prompt_cache_hit_tokens and the explicit cached_tokens-present flag. 2026-11-09 sync: upstream AgentMessageText export rename and tool-argument buffers live in other regions."
+    },
+    {
+      "id": "OVR-021",
+      "file": "backend/internal/pkg/apicompat/chatcompletions_responses_bridge_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "132-150"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "Bridge cache-hit tests."
+    },
+    {
+      "id": "OVR-022",
+      "file": "backend/internal/pkg/apicompat/chatcompletions_responses_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "57-110"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "PromptCacheKey passthrough tests."
+    },
+    {
+      "id": "OVR-023",
+      "file": "backend/internal/pkg/apicompat/chatcompletions_to_responses.go",
+      "added_line_ranges_vs_upstream_main": [
+        "48"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "PromptCacheKey passthrough into the Responses request. 2026-11-09 sync: upstream ValidateGPT61SolReasoningEffort -> ValidateGPT61ReasoningEffort rename is on another line."
+    },
+    {
+      "id": "OVR-024",
+      "file": "backend/internal/pkg/apicompat/types.go",
+      "added_line_ranges_vs_upstream_main": [
+        "655",
+        "780-808"
+      ],
+      "hunk_count": 2,
+      "deleted_by_us": false,
+      "note": "ChatCompletionsRequest.PromptCacheKey; ChatUsage.PromptCacheHitTokens plus a custom UnmarshalJSON tracking whether prompt_tokens_details.cached_tokens was explicitly present (DeepSeek cache hit)."
     },
     {
       "id": "OVR-004",
@@ -52,23 +155,44 @@
       "note": "Windows-only platform patch: blank import of time/tzdata. Without it startup aborts on Windows and every API returns 404 while the UI still loads. Still absent upstream as of 0.2.17, so it remains required."
     },
     {
+      "id": "OVR-025",
+      "file": "backend/internal/service/account_stats_pricing.go",
+      "added_line_ranges_vs_upstream_main": [
+        "281"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "Vertex third-party MaaS: NormalizeVertexThirdPartyModelID before the pricing lookup."
+    },
+    {
+      "id": "OVR-026",
+      "file": "backend/internal/service/account_test_service.go",
+      "added_line_ranges_vs_upstream_main": [
+        "2603-2635",
+        "2772-2783"
+      ],
+      "hunk_count": 2,
+      "deleted_by_us": false,
+      "note": "Vertex third-party MaaS account-test branch (buildVertexOpenAIEndpointURL + OpenAI payload) and processGeminiStream OpenAI choices parsing. 2026-11-09 sync: upstream buildAnthropicMessagesURL / OpenAIImageTestSize changes are in other regions."
+    },
+    {
       "id": "OVR-005",
       "file": "backend/internal/service/antigravity_quota_fetcher.go",
       "added_line_ranges_vs_upstream_main": [
         "9",
-        "60-61",
-        "84-89",
-        "94-98",
-        "142-147",
-        "157-168",
-        "170-173",
-        "175-186",
-        "189-194",
-        "195",
-        "198-242",
-        "246-269",
-        "271-272",
-        "273"
+        "61-62",
+        "85-90",
+        "95",
+        "97-98",
+        "101-105",
+        "148-153",
+        "163-174",
+        "176-179",
+        "181-192",
+        "195-200",
+        "204-248",
+        "252-275",
+        "277-278"
       ],
       "hunk_count": 14,
       "deleted_by_us": false,
@@ -100,11 +224,15 @@
       "id": "OVR-007",
       "file": "backend/internal/service/billing_service.go",
       "added_line_ranges_vs_upstream_main": [
-        "532-542",
-        "544-548",
-        "1136-1138"
+        "516-526",
+        "528-532",
+        "741-742",
+        "1145-1147",
+        "1157",
+        "1160-1162",
+        "1166-1168"
       ],
-      "hunk_count": 3,
+      "hunk_count": 7,
       "deleted_by_us": false,
       "note": "gemini-4-argon pricing. 2026-10-22 sync: upstream 0.2.17 ships its own official card ($2/$10/$0.10 cache read promotional through 2026-11-30) plus a gemini-4-argon-cyber-permissive entry, so the conflict was resolved by adopting their rates and keeping only our additive parts: CacheCreationPricePerToken (3.1 Pro precedent) and the -gcp Contains-matcher note. Our old inferred 0.2e-6 cache-read assumption was replaced by the published 0.1e-6; billing_service_test.go (OVR-008) was realigned. Upstream's cyber branch stays ahead of the plain argon branch so the cyber alias cannot substring-match into the promo price. If a future conflict lands here, keep BOTH sides' entries and keep cyber before argon."
     },
@@ -119,19 +247,145 @@
       "note": "Assertion realigned to 0.1e-6 in the 2026-10-22 sync; the comment records the 0.2e-6 inference history."
     },
     {
+      "id": "OVR-027",
+      "file": "backend/internal/service/gateway_upstream_response.go",
+      "added_line_ranges_vs_upstream_main": [
+        "295-299"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "extractUpstreamErrorMessage handles the Vertex OpenAPI array error shape [0.error.message]. 2026-11-09 sync: upstream SSE queue budget is in other regions."
+    },
+    {
+      "id": "OVR-028",
+      "file": "backend/internal/service/gateway_usage_billing.go",
+      "added_line_ranges_vs_upstream_main": [
+        "800",
+        "929-944",
+        "947-971",
+        "973",
+        "983",
+        "1020-1021",
+        "1031",
+        "1033"
+      ],
+      "hunk_count": 8,
+      "deleted_by_us": false,
+      "note": "Account model-mapping billing: recordUsageBillingModel gained an account param, ResolveMappedModel alias routing, BillingModelSourceUpstream and a default-mode channel-price check; billableModelWithFallback gained a targetModel candidate."
+    },
+    {
+      "id": "OVR-029",
+      "file": "backend/internal/service/gateway_usage_billing_fallback_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "74",
+        "78-118"
+      ],
+      "hunk_count": 2,
+      "deleted_by_us": false,
+      "note": "Billing fallback-candidate tests."
+    },
+    {
+      "id": "OVR-015",
+      "file": "backend/internal/service/gemini_chat_completions_compat_service.go",
+      "added_line_ranges_vs_upstream_main": [
+        "44-53",
+        "117",
+        "129",
+        "331-337"
+      ],
+      "hunk_count": 4,
+      "deleted_by_us": false,
+      "note": "Pure rename refactor: buildGeminiChatCompletionsUpstreamRequestFunc -> buildGeminiCompatUpstreamRequestFunc (shared by chat completions and Responses chains). No behavior change. The 2026-10-22 sync moved the call site to line 119 (upstream inserted code above it) and widened the definition hunk to 319-325 - still rename-only."
+    },
+    {
+      "id": "OVR-016",
+      "file": "backend/internal/service/gemini_messages_compat_service.go",
+      "added_line_ranges_vs_upstream_main": [
+        "555-558",
+        "569",
+        "1139-1143",
+        "2088-2096",
+        "2104",
+        "3511"
+      ],
+      "hunk_count": 6,
+      "deleted_by_us": false,
+      "note": "Same-line replacement only: convertClaudeMessagesToGeminiGenerateContent now pipes its contents array through normalizeGeminiTrailingTurns (new local-only file) before marshalling. Needed because Vertex answers `400 Requests ending with a model turn are not supported.` both for a history ending with a model turn and for a trailing user turn that mixes a functionResponse with text - verified against Vertex with probe payloads. Keep this line when conflicts land here; the whole normalization lives in the local-only file. 2026-10-22 sync: the line moved from 3273 to 3435 (upstream added 160+ lines above it)."
+    },
+    {
+      "id": "OVR-030",
+      "file": "backend/internal/service/openai_gateway_response_handling.go",
+      "added_line_ranges_vs_upstream_main": [
+        "1597-1598",
+        "1600"
+      ],
+      "hunk_count": 2,
+      "deleted_by_us": false,
+      "note": "openAICacheReadTokensFromUsage promotes DeepSeek prompt_cache_hit_tokens to first priority. 2026-11-09 sync: upstream bounded SSE split and instructions-echo restore are in other regions."
+    },
+    {
+      "id": "OVR-031",
+      "file": "backend/internal/service/openai_gateway_usage.go",
+      "added_line_ranges_vs_upstream_main": [
+        "216-227",
+        "232-254",
+        "256",
+        "259",
+        "395-396"
+      ],
+      "hunk_count": 5,
+      "deleted_by_us": false,
+      "note": "OpenAI-path account model-mapping billing (mirrors gateway_usage_billing). 2026-11-09 sync: upstream Terra long-context billing functions coexist."
+    },
+    {
+      "id": "OVR-032",
+      "file": "backend/internal/service/vertex_service_account.go",
+      "added_line_ranges_vs_upstream_main": [
+        "23-24",
+        "351-355",
+        "417-420",
+        "422",
+        "426",
+        "490-641"
+      ],
+      "hunk_count": 6,
+      "deleted_by_us": false,
+      "note": "Vertex third-party MaaS: buildVertexGeminiURL/ExpressURL accept publishers/... model paths; gjson/sjson imports."
+    },
+    {
+      "id": "OVR-033",
+      "file": "backend/internal/service/vertex_service_account_test.go",
+      "added_line_ranges_vs_upstream_main": [
+        "229-348"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "Vertex URL-building tests."
+    },
+    {
+      "id": "OVR-034",
+      "file": "backend/resources/model-pricing/model_prices_and_context_window.json",
+      "added_line_ranges_vs_upstream_main": [
+        "1079-1147"
+      ],
+      "hunk_count": 1,
+      "deleted_by_us": false,
+      "note": "DeepSeek V4.1 Flash MaaS price entries (vertex_ai). 2026-11-09 sync: upstream price refresh fully adopted; only our additive entries kept."
+    },
+    {
       "id": "OVR-009",
       "file": "frontend/src/components/account/AccountUsageCell.vue",
       "added_line_ranges_vs_upstream_main": [
-        "299-310",
-        "312-321",
-        "323-332",
-        "334-386",
-        "986-994",
-        "998-1010",
-        "1014",
-        "1020-1023",
-        "1026-1029",
-        "1033-1040"
+        "316-327",
+        "329-338",
+        "340-349",
+        "351-403",
+        "1039-1047",
+        "1051-1063",
+        "1067",
+        "1073-1076",
+        "1079-1082",
+        "1086-1093"
       ],
       "hunk_count": 10,
       "deleted_by_us": false
@@ -158,7 +412,7 @@
       "id": "OVR-012",
       "file": "frontend/src/i18n/locales/en/admin/accounts.ts",
       "added_line_ranges_vs_upstream_main": [
-        "1659-1662"
+        "1721-1724"
       ],
       "hunk_count": 1,
       "deleted_by_us": false
@@ -171,42 +425,6 @@
       ],
       "hunk_count": 1,
       "deleted_by_us": false
-    },
-    {
-      "id": "OVR-014",
-      "file": "backend/internal/handler/gateway_handler_responses.go",
-      "added_line_ranges_vs_upstream_main": [
-        "186-190",
-        "194-196",
-        "202",
-        "282",
-        "288-298",
-        "307-316"
-      ],
-      "hunk_count": 6,
-      "deleted_by_us": false,
-      "note": "Gemini branch for /v1/responses: group platform detection, gemini: session prefix, maxAccountSwitchesGemini, non-Gemini account skip, geminiCompatService.ForwardAsResponses dispatch. See docs/GEMINI_RESPONSES_COMPAT.md."
-    },
-    {
-      "id": "OVR-015",
-      "file": "backend/internal/service/gemini_chat_completions_compat_service.go",
-      "added_line_ranges_vs_upstream_main": [
-        "119",
-        "319-325"
-      ],
-      "hunk_count": 2,
-      "deleted_by_us": false,
-      "note": "Pure rename refactor: buildGeminiChatCompletionsUpstreamRequestFunc -> buildGeminiCompatUpstreamRequestFunc (shared by chat completions and Responses chains). No behavior change. The 2026-10-22 sync moved the call site to line 119 (upstream inserted code above it) and widened the definition hunk to 319-325 - still rename-only."
-    },
-    {
-      "id": "OVR-016",
-      "file": "backend/internal/service/gemini_messages_compat_service.go",
-      "added_line_ranges_vs_upstream_main": [
-        "3435"
-      ],
-      "hunk_count": 1,
-      "deleted_by_us": false,
-      "note": "Same-line replacement only: convertClaudeMessagesToGeminiGenerateContent now pipes its contents array through normalizeGeminiTrailingTurns (new local-only file) before marshalling. Needed because Vertex answers `400 Requests ending with a model turn are not supported.` both for a history ending with a model turn and for a trailing user turn that mixes a functionResponse with text - verified against Vertex with probe payloads. Keep this line when conflicts land here; the whole normalization lives in the local-only file. 2026-10-22 sync: the line moved from 3273 to 3435 (upstream added 160+ lines above it)."
     }
   ],
   "how_to_price_a_new_model": [
@@ -223,36 +441,12 @@
       "note": "Win11 runbook, renamed from DEV_GUIDE.md."
     },
     {
-      "path": "start-sub2api.bat",
-      "note": "Launcher (starts PostgreSQL, which is Manual-start)."
-    },
-    {
-      "path": "stop-sub2api.bat",
-      "note": "Stopper."
-    },
-    {
-      "path": "rebuild-sub2api.bat",
-      "note": "One-click rebuild. Never swaps on failure."
-    },
-    {
-      "path": "custom_changes.json",
-      "note": "This manifest."
-    },
-    {
-      "path": "sync-upstream.bat",
-      "note": "UNTRACKED on purpose: runs 'git checkout main' internally."
-    },
-    {
       "path": "backend/internal/service/gemini_responses_compat_service.go",
-      "note": "Gemini -> Responses compat chain for /v1/responses (Responses->Anthropic->Gemini, reusing existing converters). See docs/GEMINI_RESPONSES_COMPAT.md. Companion overlay edits: handler/gateway_handler_responses.go (Gemini branch) and service/gemini_chat_completions_compat_service.go (upstream builder renamed to buildGeminiCompatUpstreamRequestFunc). 2026-10-22 sync: realigned to upstream's single-check error-policy contract (checked *ErrorPolicyResult + finalErrorPolicy reuse), which replaced the old bool matched return."
+      "note": "Gemini -> Responses compat chain for /v1/responses (Responses->Anthropic->Gemini, reusing existing converters). See docs/GEMINI_RESPONSES_COMPAT.md. Companion overlay edits: handler/gateway_handler_responses.go (Gemini branch) and service/gemini_chat_completions_compat_service.go (upstream builder renamed to buildGeminiCompatUpstreamRequestFunc). 2026-10-22 sync: realigned to upstream's single-check error-policy contract (checked *ErrorPolicyResult + finalErrorPolicy reuse), which replaced the old bool matched return. 2026-11-09 sync: adapted to upstream convertClaudeMessagesToGeminiGenerateContent(body, model) 2-arg signature, collectGeminiSSE(cfg, body, isOAuth), and the geminiTextDelta struct (.next/.reset) that replaced computeGeminiTextDelta."
     },
     {
       "path": "backend/internal/service/gemini_responses_compat_service_test.go",
       "note": "Unit tests for the Gemini -> Responses chain (non-streaming + streaming event bridge)."
-    },
-    {
-      "path": "docs/GEMINI_RESPONSES_COMPAT.md",
-      "note": "Design and operations doc for the Gemini -> Responses compat chain."
     },
     {
       "path": "backend/internal/service/gemini_trailing_turns.go",
@@ -261,6 +455,46 @@
     {
       "path": "backend/internal/service/gemini_trailing_turns_test.go",
       "note": "Unit tests for the Gemini trailing-turn normalization (model-tail continuation, functionResponse/text split, no-op cases, and since 2026-10-22 the inlineData-stays-in-turn cases plus an end-to-end tool-result-image guard mirroring the upstream fixture)."
+    },
+    {
+      "path": "backend/internal/service/gemini_vertex_third_party.go",
+      "note": "Vertex third-party MaaS (DeepSeek and other publishers/ models) Responses/Claude forward chain. Local-only."
+    },
+    {
+      "path": "backend/internal/service/gemini_vertex_third_party_test.go",
+      "note": "Tests for the Vertex third-party forward chain."
+    },
+    {
+      "path": "backend/internal/service/vertex_prompt_history.go",
+      "note": "Vertex prompt-history drift logging/normalization helpers used by the Gemini compat chains. Local-only."
+    },
+    {
+      "path": "backend/internal/service/vertex_prompt_history_test.go",
+      "note": "Tests for vertex_prompt_history."
+    },
+    {
+      "path": "custom_changes.json",
+      "note": "This manifest."
+    },
+    {
+      "path": "rebuild-sub2api.bat",
+      "note": "One-click rebuild. Never swaps on failure."
+    },
+    {
+      "path": "start-sub2api.bat",
+      "note": "Launcher (starts PostgreSQL, which is Manual-start)."
+    },
+    {
+      "path": "stop-sub2api.bat",
+      "note": "Stopper."
+    },
+    {
+      "path": "sync-upstream.bat",
+      "note": "UNTRACKED on purpose: runs 'git checkout main' internally."
+    },
+    {
+      "path": "docs/GEMINI_RESPONSES_COMPAT.md",
+      "note": "Design and operations doc for the Gemini -> Responses compat chain."
     }
   ]
 }
