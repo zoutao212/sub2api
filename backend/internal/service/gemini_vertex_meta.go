@@ -89,12 +89,12 @@ func claudeUsageFromResponsesUsage(u *apicompat.ResponsesUsage) ClaudeUsage {
 	return cu
 }
 
-// vertexMetaRoundTrip shares the transport machinery (auth, retry, failover,
+// vertexMaaSRoundTrip shares the transport machinery (auth, retry, failover,
 // upstream error accounting) across the four Meta entry points. writeTransportErr
 // renders transport-level failures in the client's protocol. On a non-failover
 // upstream error the response is returned with its body re-buffered so the caller
 // can write its own protocol-specific mapped error.
-func (s *GeminiMessagesCompatService) vertexMetaRoundTrip(
+func (s *GeminiMessagesCompatService) vertexMaaSRoundTrip(
 	ctx context.Context,
 	c *gin.Context,
 	account *Account,
@@ -258,7 +258,7 @@ func (s *GeminiMessagesCompatService) forwardVertexMetaResponses(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	resp, requestID, err := s.vertexMetaRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
+	resp, requestID, err := s.vertexMaaSRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +398,7 @@ func (s *GeminiMessagesCompatService) forwardVertexMetaChatCompletions(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	resp, requestID, err := s.vertexMetaRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
+	resp, requestID, err := s.vertexMaaSRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +531,7 @@ func (s *GeminiMessagesCompatService) forwardVertexMetaClaudeMessages(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	resp, requestID, err := s.vertexMetaRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
+	resp, requestID, err := s.vertexMaaSRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
 	if err != nil {
 		return nil, err
 	}
@@ -666,7 +666,7 @@ func (s *GeminiMessagesCompatService) forwardVertexMetaNative(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	resp, requestID, err := s.vertexMetaRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
+	resp, requestID, err := s.vertexMaaSRoundTrip(ctx, c, account, targetURL, outBody, writeErr)
 	if err != nil {
 		return nil, err
 	}

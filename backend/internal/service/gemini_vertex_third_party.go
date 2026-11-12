@@ -41,6 +41,9 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyChatCompletions(
 	if isVertexMetaMaaSModel(mappedModel) {
 		return s.forwardVertexMetaChatCompletions(ctx, c, account, body, originalModel, mappedModel, clientStream, startTime)
 	}
+	if isVertexAnthropicMaaSModel(mappedModel) {
+		return s.forwardVertexAnthropicChatCompletions(ctx, c, account, body, originalModel, mappedModel, clientStream, startTime)
+	}
 	projectID := account.VertexProjectID()
 	if strings.TrimSpace(projectID) == "" {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error",
@@ -247,6 +250,9 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyNative(
 ) (*ForwardResult, error) {
 	if isVertexMetaMaaSModel(mappedModel) {
 		return s.forwardVertexMetaNative(ctx, c, account, body, originalModel, mappedModel, action, stream, startTime)
+	}
+	if isVertexAnthropicMaaSModel(mappedModel) {
+		return s.forwardVertexAnthropicNative(ctx, c, account, body, originalModel, mappedModel, action, stream, startTime)
 	}
 	if action != "generateContent" && action != "streamGenerateContent" {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Unsupported action for third-party model: "+action)
@@ -568,6 +574,9 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyResponses(
 	if isVertexMetaMaaSModel(mappedModel) {
 		return s.forwardVertexMetaResponses(ctx, c, account, body, originalModel, mappedModel, clientToolMapping, startTime)
 	}
+	if isVertexAnthropicMaaSModel(mappedModel) {
+		return s.forwardVertexAnthropicResponses(ctx, c, account, body, originalModel, mappedModel, clientToolMapping, startTime)
+	}
 	var responsesReq apicompat.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesReq); err != nil {
 		return nil, writeResponsesCompatError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
@@ -882,6 +891,9 @@ func (s *GeminiMessagesCompatService) forwardVertexThirdPartyClaudeMessages(
 ) (*ForwardResult, error) {
 	if isVertexMetaMaaSModel(mappedModel) {
 		return s.forwardVertexMetaClaudeMessages(ctx, c, account, body, originalModel, mappedModel, clientStream, startTime)
+	}
+	if isVertexAnthropicMaaSModel(mappedModel) {
+		return s.forwardVertexAnthropicClaudeMessages(ctx, c, account, body, originalModel, mappedModel, clientStream, startTime)
 	}
 	var anthropicReq apicompat.AnthropicRequest
 	if err := json.Unmarshal(body, &anthropicReq); err != nil {
