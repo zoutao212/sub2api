@@ -3,7 +3,7 @@ setlocal EnableExtensions
 set "BASE=%~dp0"
 set "LOGDIR=%BASE%backend\data\logs"
 set "LOG=%LOGDIR%\sub2api.log"
-set "URL=http://localhost:8080"
+set "URL=http://localhost:18080"
 
 rem ============================================================
 rem  Sub2API 一键启动器
@@ -79,7 +79,7 @@ echo [Sub2API] 启动成功，打开浏览器...
 start "" "%URL%"
 exit /b 0
 
-rem ---------- 工具函数：等待 8080 就绪 ----------
+rem ---------- 工具函数：等待 18080 就绪 ----------
 :WaitReady
 for /L %%i in (1,1,45) do (
     curl -s -m 2 -o nul "%URL%/health" >nul 2>&1

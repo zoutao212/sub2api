@@ -8,12 +8,12 @@
     "main": "Pure mirror of upstream/main. Never carry local commits here - GitHub's Sync fork button stays available only while this holds.",
     "custom": "upstream main + all local work. This is the build and deploy branch."
   },
-  "upstream_base": "6b4b37db4",
-  "last_sync": "2026-11-09",
-  "synced_version": "0.2.20",
+  "upstream_base": "530c5e3a4",
+  "last_sync": "2026-11-12",
+  "synced_version": "0.2.21",
   "sync_command": "sync-upstream.bat (local-only, untracked)",
   "build_command": "rebuild-sub2api.bat (tracked) - vite build, then go build -tags embed, swap, restart",
-  "conflict_hotspot_warning": "0.2.20 (2026-11-09) sync resolved: 1) Three explicit conflicts - gemini_messages_compat_service.go (kept our Vertex third-party MaaS branch + adopted upstream convertClaudeMessagesToGeminiGenerateContent(body, mappedModel) 2-arg call), en/zh admin/accounts.ts (kept BOTH our gemini5h/weekly/claude5h/weekly keys and upstream antigravityGemini/Argon/Other 5h/weekly keys; upstream native quota-group bars now render first, our bucket display is the fallback). 2) Semantic conflict git did not flag: upstream added RetrieveUserQuotaSummary in new quota_summary.go colliding with our same-named method on *Client - renamed ours to RetrieveUserQuotaSummaryWithRaw, switched to upstream QuotaSummaryResponse types, single fetch feeds both display paths. 3) Local-only gemini_responses_compat_service.go adapted to upstream refactors: collectGeminiSSE(cfg,...), geminiTextDelta struct replacing computeGeminiTextDelta, 2-arg converter; gemini_trailing_turns_test.go passes gemini-2.5-pro (the non-multimodal sibling-part shape mirrors the 0.2.19 baseline fixture; a gemini-3+ model would nest tool media inside functionResponse.parts and change the part count). Backend build + plain service/apicompat/antigravity/handler packages + frontend vue-tsc + AccountUsageCell vitest all pass. The -tags=unit suite has two pre-existing upstream flaky tests unrelated to this merge (files byte-identical to origin/main): TestOllamaProbeCallback_StaleLongDoesNotOverrideNewShort (CAS timing race, ~1/5 pass) and TestCommandCodeGatewayPassesThroughCatalogProtocols (passes in isolation, test-ordering sensitive).",
+  "conflict_hotspot_warning": "0.2.21 (2026-11-12) sync: ZERO textual conflicts - 83 upstream commits auto-merged around all 34 overlays. Semantic verification instead of conflict resolution: go build ./... clean; go test -count=1 service (141s) / apicompat / antigravity / handler all pass; AccountUsageCell vitest 65/65; frontend build gate (check:i18n + vue-tsc + vite) passes, so upstream's new antigravity force-refresh button and our bucket display coexist. Migrations 249 (usage_logs CONCURRENTLY covering index) and 250 (cache_creation_30m/12h_tokens + cache_write_12h_price columns) verified applied in schema_migrations; service healthy on 18080 serving version 0.2.21. Local deployment change same day: server port 8080 -> 18080 because WinNAT dynamically reserved TCP 7994-8093 (bind WSAEACCES); config.yaml (untracked) and start-sub2api.bat updated. If a future sync conflicts in billing/usage files, keep BOTH upstream TTL-split pricing and our account model-mapping billing (OVR-028/031); upstream cache-write 12h price defaults to 2.5x input for GPT-5.6/6 when unset.",
   "overlay_changes": [
     {
       "id": "OVR-001",
@@ -137,8 +137,8 @@
       "id": "OVR-024",
       "file": "backend/internal/pkg/apicompat/types.go",
       "added_line_ranges_vs_upstream_main": [
-        "655",
-        "780-808"
+        "658",
+        "783-811"
       ],
       "hunk_count": 2,
       "deleted_by_us": false,
@@ -158,7 +158,7 @@
       "id": "OVR-025",
       "file": "backend/internal/service/account_stats_pricing.go",
       "added_line_ranges_vs_upstream_main": [
-        "281"
+        "285"
       ],
       "hunk_count": 1,
       "deleted_by_us": false,
@@ -224,13 +224,13 @@
       "id": "OVR-007",
       "file": "backend/internal/service/billing_service.go",
       "added_line_ranges_vs_upstream_main": [
-        "516-526",
-        "528-532",
-        "741-742",
-        "1145-1147",
-        "1157",
-        "1160-1162",
-        "1166-1168"
+        "531-541",
+        "543-547",
+        "756-757",
+        "1166-1168",
+        "1178",
+        "1181-1183",
+        "1187-1189"
       ],
       "hunk_count": 7,
       "deleted_by_us": false,
@@ -306,7 +306,7 @@
         "1139-1143",
         "2088-2096",
         "2104",
-        "3511"
+        "3512"
       ],
       "hunk_count": 6,
       "deleted_by_us": false,
@@ -316,8 +316,8 @@
       "id": "OVR-030",
       "file": "backend/internal/service/openai_gateway_response_handling.go",
       "added_line_ranges_vs_upstream_main": [
-        "1597-1598",
-        "1600"
+        "1602-1603",
+        "1605"
       ],
       "hunk_count": 2,
       "deleted_by_us": false,
@@ -327,11 +327,11 @@
       "id": "OVR-031",
       "file": "backend/internal/service/openai_gateway_usage.go",
       "added_line_ranges_vs_upstream_main": [
-        "216-227",
-        "232-254",
-        "256",
-        "259",
-        "395-396"
+        "218-229",
+        "234-256",
+        "258",
+        "261",
+        "397-398"
       ],
       "hunk_count": 5,
       "deleted_by_us": false,
@@ -366,7 +366,7 @@
       "id": "OVR-034",
       "file": "backend/resources/model-pricing/model_prices_and_context_window.json",
       "added_line_ranges_vs_upstream_main": [
-        "1079-1147"
+        "1099-1167"
       ],
       "hunk_count": 1,
       "deleted_by_us": false,
@@ -380,12 +380,12 @@
         "329-338",
         "340-349",
         "351-403",
-        "1039-1047",
-        "1051-1063",
-        "1067",
-        "1073-1076",
-        "1079-1082",
-        "1086-1093"
+        "1070-1078",
+        "1082-1094",
+        "1098",
+        "1104-1107",
+        "1110-1113",
+        "1117-1124"
       ],
       "hunk_count": 10,
       "deleted_by_us": false
@@ -403,7 +403,7 @@
       "id": "OVR-011",
       "file": "frontend/src/components/account/__tests__/AccountUsageCell.spec.ts",
       "added_line_ranges_vs_upstream_main": [
-        "450-500"
+        "470-520"
       ],
       "hunk_count": 1,
       "deleted_by_us": false
@@ -482,7 +482,7 @@
     },
     {
       "path": "start-sub2api.bat",
-      "note": "Launcher (starts PostgreSQL, which is Manual-start)."
+      "note": "Launcher (starts PostgreSQL, which is Manual-start). 2026-11-12: URL now http://localhost:18080; backend/config.yaml server.port=18080 (WinNAT reserved 7994-8093 covering old 8080). Keep CRLF line endings - sed -i strips CR and cmd.exe then misparses the GBK batch."
     },
     {
       "path": "stop-sub2api.bat",
