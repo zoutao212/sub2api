@@ -458,11 +458,19 @@
     },
     {
       "path": "backend/internal/service/gemini_vertex_third_party.go",
-      "note": "Vertex third-party MaaS (DeepSeek and other publishers/ models) Responses/Claude forward chain. Local-only."
+      "note": "Vertex third-party MaaS (DeepSeek and other publishers/ models) Responses/Claude forward chain. Local-only. 2026-11-12: each of the 4 forwarders now begins with an isVertexMetaMaaSModel(mappedModel) dispatch to the Meta branch (gemini_vertex_meta.go); DeepSeek and other publishers/ models keep the original endpoints/openapi/chat/completions path unchanged."
     },
     {
       "path": "backend/internal/service/gemini_vertex_third_party_test.go",
       "note": "Tests for the Vertex third-party forward chain."
+    },
+    {
+      "path": "backend/internal/service/gemini_vertex_meta.go",
+      "note": "Meta MaaS branch (2026-11-12). Meta models on Vertex (muse-ember-1.0) are served ONLY via publishers/meta/v1/responses (model in body), NOT endpoints/openapi/chat/completions (which 404s them). isVertexMetaMaaSModel/normalizeVertexMetaModelID/buildVertexMetaResponsesURL + vertexMetaRoundTrip (shared auth/retry/failover) + 4 forwarders translating every client format to the Responses wire protocol and back: /v1/responses near-passthrough, /v1/chat/completions via ChatCompletionsToResponses/ResponsesToChatCompletions(+stream), /v1/messages via AnthropicToResponses/ResponsesToAnthropic(+stream), Gemini native via ChatCompletionsToResponses. Reuses apicompat converters; no new overlay hunks. Verified end-to-end through the gateway (Muse Ember returns real completions)."
+    },
+    {
+      "path": "backend/internal/service/gemini_vertex_meta_test.go",
+      "note": "Tests for the Meta branch: helpers, all 4 entry formats (stream + non-stream), missing project_id, and a DeepSeek-still-uses-openapi-endpoint regression guard."
     },
     {
       "path": "backend/internal/service/vertex_prompt_history.go",
